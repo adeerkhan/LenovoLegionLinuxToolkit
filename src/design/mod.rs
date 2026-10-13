@@ -2,8 +2,10 @@
 
 pub mod card;
 pub mod feature_card;
+pub mod sensor_card;
 
 pub use feature_card::FeatureCard;
+pub use sensor_card::SensorCard;
 
 use gtk4::CssProvider;
 
@@ -65,6 +67,52 @@ pub const STYLE_CSS: &str = r#"
     font-size: 24px;
     font-weight: 500;
     margin: 16px 0 24px 0;
+}
+
+/* ------------------------------------------------------------- sensors ---
+   Ported from the reference's SensorsControlV2.xaml SensorCardStyle /
+   CardTitleStyle / DataLabelStyle / DataValueStyle. The 40x6 accent meter is
+   the detail that makes a row scannable without reading the number. */
+.llt-sensor-card {
+    background-color: @card_bg_color;
+    border: 1px solid @card_shade_color;
+    border-radius: 8px;
+    padding: 12px 10px;
+    margin: 0 8px 8px 0;
+}
+
+.llt-sensor-title {
+    font-weight: 600;
+    font-size: 14px;
+    margin-bottom: 12px;
+}
+
+.llt-sensor-label {
+    font-size: 12px;
+    opacity: 0.65;
+}
+
+.llt-sensor-value {
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.llt-sensor-grid {
+    /* The reference wraps its cards and lets the container decide columns. */
+    margin: 0;
+}
+
+/* --------------------------------------------------------------- battery ---
+   The reference's BatteryPage hero: a large battery icon beside a 32px
+   percentage and a secondary status line. */
+.llt-hero-percent {
+    font-size: 32px;
+    font-weight: 500;
+}
+
+.llt-hero-status {
+    font-size: 16px;
+    opacity: 0.7;
 }
 
 /* ------------------------------------------------------- unavailable ---- */

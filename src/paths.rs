@@ -205,3 +205,86 @@ pub fn find_battery_file(attr: &str) -> Option<PathBuf> {
         })
         .find(|p| p.exists())
 }
+
+/// Find an hwmon directory by its `name` file — `coretemp`, `nvme`, and so on.
+///
+/// The legion driver's own sensors live under its platform directory and are
+/// resolved separately; this is for the generic thermal and storage monitoring
+/// the kernel already provides with no driver of ours involved.
+pub fn find_hwmon_by_name(name: &str) -> Option<PathBuf> {
+    std::fs::read_dir("/sys/class/hwmon")
+        .ok()?
+        .flatten()
+        .find_map(|e| {
+            let path = e.path();
+            (std::fs::read_to_string(path.join("name")).ok()?.trim() == name).then_some(path)
+        })
+}
+
+/// The hottest coretemp reading, in °C.
+///
+/// `coretemp` exposes one input per core plus a package sensor, and which index
+/// is the package varies by CPU generation. Reading the maximum is the honest
+/// proxy for "CPU temperature" — it is what matters thermally, and it never
+/// reports a colder number than any real sensor.
+pub fn coretemp_max_c() -> Option<f64> {
+    let dir = find_hwmon_by_name("coretemp")?;
+    std::fs::read_dir(&dir)
+        .ok()?
+        .flatten()
+        .fold(None, |acc: Option<f64>, e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            if !(name.starts_with("temp") && name.ends_with("_input")) {
+                return acc;
+            }
+            let value: f64 = std::fs::read_to_string(e.path())
+                .ok()?
+                .trim()
+                .parse()
+                .ok()?;
+            let celsius = value / 1000.0;
+            if value <= 0.0 {
+                return acc;
+            }
+            Some(acc.map_or(celsius, |a: f64| a.max(celsius)))
+        })
+}
+
+/// The battery's power_supply directory.
+pub fn battery_dir() -> Option<PathBuf> {
+    std::fs::read_dir("/sys/class/power_supply")
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let dir = e.path();
+            let is_battery = std::fs::read_to_string(dir.join("type")).ok()?.trim() == "Battery";
+            let present = std::fs::read_to_string(dir.join("present"))
+                .ok()
+                .map(|s| s.trim() == "1")
+                .unwrap_or(true);
+            (is_battery && present).then_some(dir)
+        })
+        .next()
+}
+
+/// A numeric attribute of a specific power_supply directory, or `None`.
+pub fn battery_float_in(dir: &Path, attr: &str) -> Option<f64> {
+    std::fs::read_to_string(dir.join(attr))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// A numeric attribute of the battery, or `None`.
+pub fn battery_float(attr: &str) -> Option<f64> {
+    battery_float_in(&battery_dir()?, attr)
+}
+
+/// A textual attribute of the battery, or an empty string.
+pub fn battery_text(attr: &str) -> String {
+    battery_dir()
+        .and_then(|d| std::fs::read_to_string(d.join(attr)).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}

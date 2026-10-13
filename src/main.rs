@@ -5,6 +5,7 @@
 
 mod application;
 mod design;
+mod pages;
 mod window;
 
 use tracing_subscriber::{fmt, EnvFilter};

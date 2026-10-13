@@ -1,8 +1,13 @@
-//! The main window: sidebar navigation plus capability-driven pages.
+//! The main window: sidebar navigation, one dashboard, and one page per
+//! capability group.
 //!
-//! The dashboard is not written per model. It is generated from the backend's
-//! capability report and grouped, which is why the same window works on a
-//! Legion 5 15IRX10 (no fan curve, no power limits) and a model that has both.
+//! The reference application has a landing dashboard built from capability
+//! cards, plus dedicated pages. This reproduces both halves — earlier the
+//! dashboard existed and four of the five sidebar entries were a placeholder.
+//!
+//! The dashboard itself is still generated from the capability report rather
+//! than hand-written per model, which is why the same binary works on a Legion
+//! 5 15IRX10 (no fan curve, no power limits) and on a model that has both.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -12,6 +17,7 @@ use adw::ApplicationWindow;
 use gtk4::{Box as GtkBox, Label, ListBox, Orientation, ScrolledWindow, Stack};
 
 use crate::design::FeatureCard;
+use crate::pages::Pages;
 use legiontoolkit::backends::{Backend, MockBackend, SysfsBackend};
 use legiontoolkit::capability::Group;
 
@@ -24,13 +30,16 @@ const GROUPS: [Group; 5] = [
     Group::System,
 ];
 
-/// Sidebar entries: icon, title, stack page id.
-const PAGES: [(&str, &str, &str); 5] = [
+/// Sidebar entries, in the order the reference uses. The dashboard is always
+/// first; the rest are one per capability group, plus About.
+const NAV: [(&str, &str, &str); 7] = [
     ("go-home-symbolic", "Dashboard", "dashboard"),
     ("power-profile-performance-symbolic", "Power", "power"),
+    ("fan-symbolic", "Thermal", "thermal"),
     ("keyboard-brightness-symbolic", "Lighting", "lighting"),
     ("battery-symbolic", "Battery", "battery"),
     ("emblem-system-symbolic", "System", "system"),
+    ("help-about-symbolic", "About", "about"),
 ];
 
 /// Which backend to use. The sysfs backend works on real hardware; the mock
@@ -47,22 +56,6 @@ fn select_backend() -> Box<dyn Backend> {
         );
     }
     Box::new(backend)
-}
-
-/// Build a one-line placeholder page.
-fn placeholder_page(title: &str, body: &str) -> GtkBox {
-    let page = GtkBox::new(Orientation::Vertical, 12);
-    page.set_valign(gtk4::Align::Center);
-    page.set_halign(gtk4::Align::Center);
-
-    let heading = Label::new(Some(title));
-    heading.add_css_class("llt-group-title");
-    let detail = Label::new(Some(body));
-    detail.add_css_class("llt-card-subtitle");
-
-    page.append(&heading);
-    page.append(&detail);
-    page
 }
 
 /// A dismissible banner. `AdwBanner` carries no body text, so the actionable
@@ -84,7 +77,6 @@ pub struct MainWindow {
 impl MainWindow {
     pub fn new(app: &adw::Application) -> Self {
         let backend = select_backend();
-        let mut capabilities = backend.capabilities();
 
         let warnings = legiontoolkit::services::system_warnings(
             backend.as_ref(),
@@ -101,7 +93,8 @@ impl MainWindow {
             .default_height(780)
             .build();
 
-        let cards: Rc<RefCell<Vec<FeatureCard>>> = Rc::new(RefCell::new(Vec::new()));
+        let dashboard_cards: Rc<RefCell<Vec<FeatureCard>>> = Rc::new(RefCell::new(Vec::new()));
+        let mut pages = Pages::new();
 
         // ------------------------------------------------------------------
         // Pages
@@ -122,6 +115,9 @@ impl MainWindow {
             page.set_margin_start(12);
             page.set_margin_end(12);
 
+            let mut capabilities = backend.capabilities();
+            let mut empty = true;
+
             for group in GROUPS {
                 let mut i = 0;
                 let mut any = false;
@@ -141,34 +137,27 @@ impl MainWindow {
                     let card = FeatureCard::new(cap);
                     page.append(card.gtk_widget());
                     card.connect_controls(page.clone().upcast::<gtk4::Widget>());
-                    cards.borrow_mut().push(card);
+                    dashboard_cards.borrow_mut().push(card);
                 }
+                empty &= !any;
+            }
+
+            if empty {
+                let note = Label::new(Some("No supported hardware was detected on this machine."));
+                note.add_css_class("llt-unavailable");
+                note.set_wrap(true);
+                page.append(&note);
             }
 
             scroll.set_child(Some(&page));
             stack.add_titled(&scroll, Some("dashboard"), "Dashboard");
         }
 
-        stack.add_titled(
-            &placeholder_page("Power", "Power modes, power limits and fan control."),
-            Some("power"),
-            "Power",
-        );
-        stack.add_titled(
-            &placeholder_page("Lighting", "Keyboard backlight and logo lighting."),
-            Some("lighting"),
-            "Lighting",
-        );
-        stack.add_titled(
-            &placeholder_page("Battery", "Charge thresholds and battery health."),
-            Some("battery"),
-            "Battery",
-        );
-        stack.add_titled(
-            &placeholder_page("System", "Input toggles, boot logo and about."),
-            Some("system"),
-            "System",
-        );
+        // Capability-driven pages, built once and refreshed in place.
+        pages.rebuild(backend.as_ref());
+        for (id, widget, title) in pages.stack_pages() {
+            stack.add_titled(widget, Some(id), title);
+        }
 
         // ------------------------------------------------------------------
         // Sidebar
@@ -177,17 +166,16 @@ impl MainWindow {
         sidebar_list.add_css_class("navigation-sidebar");
         sidebar_list.set_selection_mode(gtk4::SelectionMode::Single);
 
-        for (icon, title, page_id) in PAGES {
+        for (icon, title, _page_id) in NAV {
             let row = adw::ActionRow::builder()
                 .title(title)
                 .activatable(true)
                 .build();
             row.add_prefix(&gtk4::Image::from_icon_name(icon));
-            row.set_widget_name(page_id);
+            row.set_widget_name(_page_id);
             sidebar_list.append(&row);
         }
 
-        // Select the dashboard row so the first page is visible immediately.
         if let Some(first) = sidebar_list.row_at_index(0) {
             sidebar_list.select_row(Some(&first));
         }
@@ -195,8 +183,6 @@ impl MainWindow {
         sidebar_list.connect_row_activated({
             let stack = stack.clone();
             move |_, row| {
-                // `widget_name` hands back an owned `GString`; bind it so the
-                // borrow outlives the call.
                 let name = row.widget_name();
                 stack.set_visible_child_name(name.as_str());
             }
@@ -215,8 +201,9 @@ impl MainWindow {
         );
         sidebar_page.set_child(Some(&sidebar_box));
 
-        // Banners live above the page stack so they are visible whichever
-        // section is open — the user should not have to find them.
+        // ------------------------------------------------------------------
+        // Warnings, above the whole page stack
+        // ------------------------------------------------------------------
         let content_box = GtkBox::new(Orientation::Vertical, 0);
         for warning in &warnings {
             content_box.append(&warning_banner(warning));
@@ -260,7 +247,7 @@ impl MainWindow {
         theme_toggle.connect_clicked(|_| crate::design::cycle_color_scheme());
         header.pack_end(&theme_toggle);
 
-        let cards_for_refresh = cards.clone();
+        let cards_for_refresh = dashboard_cards.clone();
         let refresh = gtk4::Button::from_icon_name("view-refresh-symbolic");
         refresh.set_tooltip_text(Some("Refresh now"));
         refresh.connect_clicked(move |_| {
@@ -275,20 +262,22 @@ impl MainWindow {
         window.set_content(Some(&toolbar));
 
         // Warm the values before the first paint.
-        for card in cards.borrow().iter() {
+        for card in dashboard_cards.borrow().iter() {
             card.refresh();
         }
 
         // ------------------------------------------------------------------
         // Refresh loop
         // ------------------------------------------------------------------
-        // One second is the cadence the reference's battery page uses. Readings
-        // are cheap sysfs reads, so this stays on the main thread rather than
-        // paying for a worker and the channel that would come with it.
+        // One second is the cadence the reference's battery and sensor pages
+        // use. Readings are cheap sysfs reads, so this stays on the main thread
+        // rather than paying for a worker and the channel that would come with
+        // it.
         glib::timeout_add_seconds_local(1, move || {
-            for card in cards.borrow().iter() {
+            for card in dashboard_cards.borrow().iter() {
                 card.refresh();
             }
+            pages.refresh();
             glib::ControlFlow::Continue
         });
 

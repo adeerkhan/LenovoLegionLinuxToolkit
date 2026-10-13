@@ -231,25 +231,73 @@ impl Backend for SysfsBackend {
         caps.push(max_fan);
 
         // ---- Thermal ------------------------------------------------------
+        // CPU temperature prefers the legion driver's sensor and falls back to
+        // coretemp. On this model the driver is not loaded, and the machine is
+        // at 60–88 °C right now: reporting "requires the driver" while coretemp
+        // holds the number would be the wrong answer. The fallback is labelled
+        // honestly as the hottest core, because coretemp's index layout varies
+        // by CPU generation and this is a proxy, not the driver's reading.
+        {
+            let legion = self.paths.file("cpu_temp").filter(|p| p.exists());
+            let has_coretemp = paths::find_hwmon_by_name("coretemp").is_some();
+            let mut b = Builder::new("cpu_temp", Kind::ReadOnly, Group::Thermal)
+                .label("CPU Temperature")
+                .icon("cpu-symbolic")
+                .unit("°C");
+            match (&legion, has_coretemp) {
+                (Some(path), _) => {
+                    let path = path.clone();
+                    b = b.read(move || {
+                        let raw: f64 = read_trim(&path)?.parse()?;
+                        Ok(Value::Float(raw / 1000.0))
+                    });
+                }
+                (None, true) => {
+                    b = b
+                        .note("Hottest core, via coretemp")
+                        .read(|| Ok(Value::Float(paths::coretemp_max_c().unwrap_or(0.0))));
+                }
+                (None, false) => {
+                    b = b.unavailable("No CPU temperature sensor found");
+                }
+            }
+            caps.push(b.build());
+        }
+
         for (key, label, icon) in [
-            ("cpu_temp", "CPU Temperature", "cpu-symbolic"),
             ("gpu_temp", "GPU Temperature", "video-display-symbolic"),
             ("ic_temp", "Chipset Temperature", "motherboard-symbolic"),
-            ("fan1_rpm", "CPU Fan", "fan-symbolic"),
-            ("fan2_rpm", "GPU Fan", "fan-symbolic"),
         ] {
-            let unit = match key {
-                "cpu_temp" | "gpu_temp" | "ic_temp" => "\u{00b0}C",
-                _ => "rpm",
-            };
-            caps.push(self.sensor_cap(
-                key,
-                label,
-                icon,
-                Group::Thermal,
-                unit,
-                key.ends_with("_temp"),
-            ));
+            caps.push(self.sensor_cap(key, label, icon, Group::Thermal, "°C", true));
+        }
+
+        for (key, label) in [
+            ("fan1_rpm", "CPU Fan"),
+            ("fan2_rpm", "GPU Fan"),
+            ("fan3_rpm", "Auxiliary Fan"),
+            ("fan4_rpm", "Fourth Fan"),
+        ] {
+            caps.push(self.sensor_cap(key, label, "fan-symbolic", Group::Thermal, "rpm", false));
+        }
+
+        // NVMe temperature, straight from the kernel's own monitoring. Available
+        // on every machine with an NVMe drive and no driver involved — the
+        // reference shows this in its disk sensor card.
+        if let Some(hwmon) = paths::find_hwmon_by_name("nvme") {
+            let path = hwmon.join("temp1_input");
+            if path.exists() {
+                caps.push(
+                    Builder::new("disk_temp", Kind::ReadOnly, Group::Thermal)
+                        .label("Disk Temperature")
+                        .icon("drive-harddisk-symbolic")
+                        .unit("°C")
+                        .read(move || {
+                            let raw: f64 = read_trim(&path)?.parse()?;
+                            Ok(Value::Float(raw / 1000.0))
+                        })
+                        .build(),
+                );
+            }
         }
 
         // Fan curve: absent on this model, present in the matrix so the
@@ -329,16 +377,19 @@ impl Backend for SysfsBackend {
         ));
 
         // ---- Battery ------------------------------------------------------
+        // Every value here is read straight from the power_supply class, which
+        // works on any Linux machine with no driver of ours involved — so the
+        // battery page is useful before the legion module is ever loaded.
+        // The reference shows twelve stat cards; we surface the ones sysfs
+        // actually reports rather than inventing placeholders for the rest.
         caps.push(
             Builder::new("battery_capacity", Kind::ReadOnly, Group::Battery)
                 .label("Battery Level")
                 .icon("battery-symbolic")
                 .unit("%")
                 .read(|| {
-                    let cap = paths::find_battery_file("capacity")
-                        .and_then(|p| read_trim(&p).ok())
-                        .unwrap_or_default();
-                    Ok(Value::Float(cap.parse().unwrap_or(0.0)))
+                    let cap = paths::battery_float("capacity").unwrap_or(0.0);
+                    Ok(Value::Float(cap))
                 })
                 .build(),
         );
@@ -347,13 +398,95 @@ impl Backend for SysfsBackend {
                 .label("Battery Status")
                 .icon("battery-symbolic")
                 .read(|| {
-                    let st = paths::find_battery_file("status")
-                        .and_then(|p| read_trim(&p).ok())
-                        .unwrap_or_else(|| "Unknown".into());
+                    let st = paths::battery_text("status");
                     Ok(Value::Text(st))
                 })
                 .build(),
         );
+
+        // Battery health is the number people actually look up, and sysfs
+        // reports both full and design capacity so it can be derived rather
+        // than guessed. Full charge below ~80% of design means the cell is worn.
+        if let Some(home) = paths::battery_dir() {
+            let hwmon = home.clone();
+            caps.push(
+                Builder::new("battery_health", Kind::ReadOnly, Group::Battery)
+                    .label("Battery Health")
+                    .icon("battery-good-symbolic")
+                    .unit("%")
+                    .read(move || {
+                        let full = paths::battery_float_in(&hwmon, "energy_full")
+                            .or_else(|| paths::battery_float_in(&hwmon, "charge_full"));
+                        let design = paths::battery_float_in(&hwmon, "energy_full_design")
+                            .or_else(|| paths::battery_float_in(&hwmon, "charge_full_design"));
+                        match (full, design) {
+                            (Some(f), Some(d)) if d > 0.0 => Ok(Value::Float(f / d * 100.0)),
+                            _ => Ok(Value::Float(0.0)),
+                        }
+                    })
+                    .build(),
+            );
+        }
+
+        caps.push(
+            Builder::new("battery_cycles", Kind::ReadOnly, Group::Battery)
+                .label("Cycle Count")
+                .icon("battery-symbolic")
+                .read(|| {
+                    let cycles = paths::battery_text("cycle_count");
+                    if cycles.is_empty() {
+                        Ok(Value::Text("—".into()))
+                    } else {
+                        Ok(Value::Text(cycles))
+                    }
+                })
+                .build(),
+        );
+
+        if let Some(home) = paths::battery_dir() {
+            let d1 = home.clone();
+            let d2 = home.clone();
+            let d3 = home.clone();
+            caps.push(
+                Builder::new("battery_voltage", Kind::ReadOnly, Group::Battery)
+                    .label("Voltage")
+                    .icon("battery-symbolic")
+                    .unit("V")
+                    .read(move || {
+                        let v = paths::battery_float_in(&d1, "voltage_now").unwrap_or(0.0);
+                        Ok(Value::Float(v / 1_000_000.0))
+                    })
+                    .build(),
+            );
+            caps.push(
+                Builder::new("battery_charge_now", Kind::ReadOnly, Group::Battery)
+                    .label("Charge Remaining")
+                    .icon("battery-symbolic")
+                    .unit("Wh")
+                    .read(move || {
+                        let wh = paths::battery_float_in(&d2, "energy_now")
+                            .or_else(|| paths::battery_float_in(&d2, "charge_now"))
+                            .unwrap_or(0.0);
+                        // energy_* are in µWh already; charge_* are in µAh and
+                        // would need the voltage to become Wh.
+                        Ok(Value::Float(wh / 1_000_000.0))
+                    })
+                    .build(),
+            );
+            caps.push(
+                Builder::new("battery_power", Kind::ReadOnly, Group::Battery)
+                    .label("Power Draw")
+                    .icon("battery-symbolic")
+                    .unit("W")
+                    .read(move || {
+                        let w = paths::battery_float_in(&d3, "power_now").unwrap_or(0.0);
+                        // power_now is µW; a negative value means discharging,
+                        // which is the direction the reference shows.
+                        Ok(Value::Float(w / 1_000_000.0))
+                    })
+                    .build(),
+            );
+        }
         caps.push(self.toggle_cap(
             "battery_conservation",
             "Battery Conservation",
@@ -406,5 +539,113 @@ fn humanise_profile(value: &str) -> String {
             })
             .collect::<Vec<_>>()
             .join(" "),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backends::Backend;
+
+    /// Every capability the backend reports, as `key: value` lines.
+    ///
+    /// Run with `cargo test --lib -- --nocapture capability_report` to see what
+    /// a machine actually has. The fastest way to check the backend against
+    /// real hardware without launching the GUI.
+    #[test]
+    fn capability_report() {
+        let backend = SysfsBackend::new();
+        for cap in backend.capabilities() {
+            match cap.read() {
+                Ok(value) => println!(
+                    "{:<26} {:<24} {}",
+                    cap.key,
+                    value.to_string(),
+                    if cap.is_available() {
+                        ""
+                    } else {
+                        "UNAVAILABLE"
+                    }
+                ),
+                Err(e) => println!("{:<26} <read failed: {e}>", cap.key),
+            }
+        }
+    }
+
+    /// A capability that reports itself available must return a value, not a
+    /// placeholder. This is the invariant the pages depend on: a blank row means
+    /// "no sensor", so a row of placeholders means the backend is lying.
+    #[test]
+    fn available_capabilities_return_values() {
+        let backend = SysfsBackend::new();
+        for cap in backend.capabilities() {
+            if !cap.is_available() || matches!(cap.kind, Kind::Custom) {
+                continue;
+            }
+            let value = cap
+                .read()
+                .unwrap_or_else(|e| panic!("{} is available but unreadable: {e}", cap.key));
+            assert!(
+                !matches!(value, Value::Text(ref t) if t == "—"),
+                "{} returned a placeholder while claiming to be available",
+                cap.key
+            );
+        }
+    }
+
+    /// Battery health is derived, and a derived number that comes out impossible
+    /// is the failure mode to catch — the page would show it to the user.
+    #[test]
+    fn battery_health_is_a_percentage() {
+        let backend = SysfsBackend::new();
+        let Some(cap) = backend
+            .capabilities()
+            .into_iter()
+            .find(|c| c.key == "battery_health")
+        else {
+            return;
+        };
+        // Only meaningful where the battery reports the capacities it needs.
+        if paths::battery_float("energy_full").is_none()
+            && paths::battery_float("charge_full").is_none()
+        {
+            return;
+        }
+        let Ok(Value::Float(health)) = cap.read() else {
+            return;
+        };
+        assert!(
+            (0.0..=100.0).contains(&health),
+            "battery health out of range: {health}%"
+        );
+    }
+
+    /// The coretemp fallback is what makes the thermal page useful with no
+    /// legion driver loaded, so it must resolve when the source exists.
+    #[test]
+    fn cpu_temperature_has_a_source() {
+        let has_coretemp = paths::find_hwmon_by_name("coretemp").is_some()
+            || paths::find_hwmon_by_name("k10temp").is_some();
+        if !has_coretemp {
+            return;
+        }
+        let backend = SysfsBackend::new();
+        let Some(cap) = backend
+            .capabilities()
+            .into_iter()
+            .find(|c| c.key == "cpu_temp")
+        else {
+            return;
+        };
+        assert!(
+            cap.is_available(),
+            "cpu_temp unavailable although a thermal source exists"
+        );
+        if let Ok(Value::Float(celsius)) = cap.read() {
+            assert!(
+                (5.0..=130.0).contains(&celsius),
+                "cpu temperature implausible: {celsius} C"
+            );
+        }
     }
 }

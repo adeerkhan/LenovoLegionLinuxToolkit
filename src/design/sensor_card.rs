@@ -1,0 +1,120 @@
+//! The sensor card — the signature visual of the reference application.
+//!
+//! Ported from `SensorsControlV2.xaml` in the Lenovo Legion Toolkit reference:
+//! a grid of cards, each with a semibold title and rows of *label, value, and a
+//! small accent-coloured meter*. The 40×6 meter is the detail that makes a row
+//! scannable at a glance rather than requiring you to read the number.
+//!
+//! The reference computes each meter's ceiling from the sensor's own maximum
+//! (`UpdateValue` sets `bar.Maximum = max`), so a bar means the same thing on
+//! every row — "how close to the top of this sensor's range", not "how big the
+//! number is".
+
+use gtk4::prelude::*;
+use gtk4::{Align, Box as GtkBox, Grid, Label, Orientation, Scale};
+
+/// One row inside a sensor card.
+struct Row {
+    unit: &'static str,
+    /// How many decimal places to show. Reference uses 0 for temperature and
+    /// RPM, 1 for clocks.
+    precision: usize,
+    value: Label,
+    meter: Scale,
+}
+
+/// A card of related readings, matching the reference's `SensorCardStyle`.
+pub struct SensorCard {
+    root: GtkBox,
+    rows: Vec<Row>,
+}
+
+impl SensorCard {
+    pub fn new(title: &str) -> Self {
+        let root = GtkBox::new(Orientation::Vertical, 6);
+        root.add_css_class("llt-card");
+        root.add_css_class("llt-sensor-card");
+
+        let title_label = Label::new(Some(title));
+        title_label.add_css_class("llt-sensor-title");
+        title_label.set_halign(Align::Start);
+        root.append(&title_label);
+
+        Self {
+            root,
+            rows: Vec::new(),
+        }
+    }
+
+    /// Add a row of `label → value + meter`.
+    ///
+    /// `meter_max` is the sensor's ceiling, taken from the driver or a sensible
+    /// default for the unit — never from the current reading, which would make
+    /// the meter jitter as the value moves.
+    pub fn add_row(
+        &mut self,
+        label: &str,
+        unit: &'static str,
+        precision: usize,
+        meter_max: f64,
+    ) -> usize {
+        let row = Grid::new();
+        row.set_column_spacing(8);
+
+        let label_widget = Label::new(Some(label));
+        label_widget.add_css_class("llt-sensor-label");
+        label_widget.set_halign(Align::Start);
+        label_widget.set_hexpand(true);
+        label_widget.set_wrap(true);
+        label_widget.set_max_width_chars(18);
+        row.attach(&label_widget, 0, 0, 1, 1);
+
+        let value = Label::new(None);
+        value.add_css_class("llt-sensor-value");
+        value.set_halign(Align::End);
+        value.set_label("—");
+        row.attach(&value, 1, 0, 1, 1);
+
+        let meter = Scale::with_range(Orientation::Horizontal, 0.0, meter_max, 1.0);
+        meter.add_css_class("llt-meter");
+        meter.set_draw_value(false);
+        meter.set_sensitive(false);
+        meter.set_size_request(40, 6);
+        meter.set_valign(Align::Center);
+        row.attach(&meter, 2, 0, 1, 1);
+
+        self.root.append(&row);
+        self.rows.push(Row {
+            unit,
+            precision,
+            value,
+            meter,
+        });
+        self.rows.len() - 1
+    }
+
+    /// Update one row. `None` blanks it rather than hiding the row, so a
+    /// sensor that appears or disappears does not make the card jump.
+    pub fn set_value(&self, row: usize, value: Option<f64>) {
+        let Some(row_data) = self.rows.get(row) else {
+            return;
+        };
+        match value {
+            Some(value) => {
+                row_data.value.set_label(&format!(
+                    "{:.*} {}",
+                    row_data.precision, value, row_data.unit
+                ));
+                row_data.meter.set_value(value);
+            }
+            None => {
+                row_data.value.set_label("—");
+                row_data.meter.set_value(0.0);
+            }
+        }
+    }
+
+    pub fn widget(&self) -> &GtkBox {
+        &self.root
+    }
+}
