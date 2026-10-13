@@ -65,6 +65,18 @@ fn placeholder_page(title: &str, body: &str) -> GtkBox {
     page
 }
 
+/// A dismissible banner. `AdwBanner` carries no body text, so the actionable
+/// part goes in the title and the button only silences it.
+fn warning_banner(title: &str) -> adw::Banner {
+    let banner = adw::Banner::builder()
+        .title(title)
+        .button_label("Dismiss")
+        .revealed(true)
+        .build();
+    banner.connect_button_clicked(|b| b.set_revealed(false));
+    banner
+}
+
 pub struct MainWindow {
     window: ApplicationWindow,
 }
@@ -74,7 +86,11 @@ impl MainWindow {
         let backend = select_backend();
         let mut capabilities = backend.capabilities();
 
-        if let Some(warning) = backend.global_warning() {
+        let warnings = legiontoolkit::services::system_warnings(
+            backend.as_ref(),
+            legiontoolkit::services::privilege::is_escalation_available(),
+        );
+        for warning in &warnings {
             tracing::warn!("{warning}");
         }
 
@@ -199,10 +215,34 @@ impl MainWindow {
         );
         sidebar_page.set_child(Some(&sidebar_box));
 
+        // Banners live above the page stack so they are visible whichever
+        // section is open — the user should not have to find them.
+        let content_box = GtkBox::new(Orientation::Vertical, 0);
+        for warning in &warnings {
+            content_box.append(&warning_banner(warning));
+        }
+        content_box.append(&stack);
+
         let content_page = adw::NavigationPage::builder()
             .title("Dashboard")
-            .child(&stack)
+            .child(&content_box)
             .build();
+
+        // Keep the header bar's title in step with the section on screen.
+        // Wired after the page exists so the closure can borrow it.
+        let page_for_title = content_page.clone();
+        stack.connect_visible_child_notify(move |stack| {
+            let name = stack.visible_child_name().unwrap_or_default();
+            if name.is_empty() {
+                return;
+            }
+            let title = name
+                .chars()
+                .next()
+                .map(|c| c.to_uppercase().to_string() + &name[c.len_utf8()..])
+                .unwrap_or(name.to_string());
+            page_for_title.set_title(&title);
+        });
 
         let split = adw::NavigationSplitView::builder()
             .sidebar(&sidebar_page)

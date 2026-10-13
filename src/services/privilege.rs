@@ -16,10 +16,19 @@ use std::process::Command;
 /// exec.path` annotation in the shipped `.policy` file exactly.
 pub const HELPER_ACTION: &str = "org.legiontoolkit.helper";
 
-/// Absolute path of the helper binary. The polkit action declares this same
-/// path; if the two ever diverge, authorisation fails silently and every write
-/// reports as refused.
-pub const HELPER_PATH: &str = "/usr/libexec/legiontoolkit-helper";
+/// Absolute path of the helper binary.
+///
+/// Baked in at build time by the Makefile, which passes
+/// `LEGIONTOOLKIT_HELPER_PATH` derived from `HELPER_PATH`. This exists so the
+/// binary and the polkit policy cannot disagree: the policy declares the same
+/// path, and polkit matches it exactly, so a mismatch would refuse every write
+/// in a way that looks like the feature is broken.
+///
+/// The fallback is the location a distro package would use.
+pub const HELPER_PATH: &str = match option_env!("LEGIONTOOLKIT_HELPER_PATH") {
+    Some(path) => path,
+    None => "/usr/libexec/legiontoolkit-helper",
+};
 
 /// Whether the pkexec + helper path can work at all on this system.
 pub fn is_escalation_available() -> bool {

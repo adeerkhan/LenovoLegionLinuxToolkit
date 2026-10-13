@@ -5,23 +5,28 @@
 <!--
   Polkit action for the privileged helper.
 
-  The `org.freedesktop.policykit.exec.path` annotation must match the absolute
-  install path of the helper binary exactly. If the two ever diverge, pkexec
-  refuses the request and every write in the application reports as refused —
-  which looks like a broken feature rather than a packaging bug. Keep this file
-  and packaging/legiontoolkit.spec in step.
+  THIS IS A TEMPLATE. `install.sh` substitutes the placeholders below and writes
+  the rendered file to $POLKITDIR. It is not installed verbatim.
+
+  The `org.freedesktop.policykit.exec.path` annotation must name the exact
+  absolute path of the helper binary. polkit matches it literally: if the two
+  ever diverge, pkexec refuses the request and every write in the application
+  reports as refused, which is indistinguishable from the feature being broken.
+  Keeping the path here as a placeholder is what makes that impossible to get
+  wrong by hand — the Makefile computes it once and install.sh uses the same
+  value.
 
   `auth_admin` (not `auth_admin_keep`) is deliberate: writing to the embedded
-  controller is not something to silently remember. A user who is going to
-  change their fan curve can re-authenticate; a user who is flipping a toggle
-  in an automation profile should not find the session permanently authorised.
+  controller is not something to silently remember. Someone changing a fan
+  curve can re-authenticate; someone flipping a toggle from an automation
+  profile must not end up with a permanently authorised session.
 -->
 <policyconfig>
 
   <vendor>Legion Linux Toolkit</vendor>
-  <vendor_url>https://github.com/adeerkhan/LenovoLegionLinuxToolkit</vendor_url>
+  <vendor_url>https://github.com/adeerkhan/legion-toolkit</vendor_url>
 
-  <action id="org.legiontoolkit.helper">
+  <action id="@POLKIT_ACTION@">
     <description>Write hardware settings on a Lenovo Legion laptop</description>
     <description xml:lang="en">Write hardware settings on a Lenovo Legion laptop</description>
     <message>
@@ -37,7 +42,7 @@
       <allow_active>auth_admin</allow_active>
     </defaults>
 
-    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/legiontoolkit-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.path">@HELPER_PATH@</annotate>
     <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
   </action>
 

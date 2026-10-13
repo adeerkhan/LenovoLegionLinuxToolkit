@@ -495,3 +495,6 @@ FodyWeavers.xsd
 Cargo.lock is committed for a binary: reproducible builds matter more than the
 ability to depend on floating library versions.
 Reference/
+
+# CodeGraph index
+/.codegraph

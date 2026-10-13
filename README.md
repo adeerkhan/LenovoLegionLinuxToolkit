@@ -53,10 +53,27 @@ shows live data out of the box.
 
 ## Installation
 
+### Any Linux — local install
+
+The quickest route to a working, testable installation today:
+
+```sh
+git clone https://github.com/adeerkhan/legion-toolkit.git
+cd legion-toolkit
+make install
+```
+
+That builds both binaries and installs the polkit policy, desktop entry and
+icon, with the helper placed exactly where the policy names it. The Makefile
+owns every destination, so `make install PREFIX=~/.local` works too, and
+`make uninstall` reverses it exactly.
+
+`make distcheck` prints the layout without touching the system — the fastest
+way to see where things will land before you commit to it.
+
 ### Fedora
 
-Not yet packaged in the official repositories — build from source, below.
-System prerequisites:
+Prerequisites, then the commands above:
 
 ```sh
 sudo dnf install \
@@ -66,8 +83,6 @@ sudo dnf install \
 
 ### Ubuntu / Debian
 
-Not yet packaged — build from source, below. System prerequisites:
-
 ```sh
 sudo apt install \
     libgtk-4-dev libadwaita-1-dev libpango1.0-dev \
@@ -76,7 +91,20 @@ sudo apt install \
 
 ### Arch Linux
 
-Not yet packaged. Build from source, below.
+```sh
+yay -S legiontoolkit
+```
+
+### From a distribution package
+
+Not yet in any distribution's repositories. An RPM for Fedora and a DEB for
+Ubuntu are the next step; until then, `make install` above is the supported
+route.
+
+On Flatpak: it would be a single artifact for every distribution, but the
+sandbox cannot write to `/sys`, and the privilege model here needs a root
+helper outside that sandbox. For a hardware control panel, native packages are
+the correct answer, so that is where the effort goes.
 
 ### Hardware permissions
 
