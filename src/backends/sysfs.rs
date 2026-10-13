@@ -12,6 +12,7 @@
 use crate::backends::Backend;
 use crate::capability::{read_trim, Builder, Capability, Group, Kind, Limits, NamedValue, Value};
 use crate::paths::{self, SysPaths};
+use crate::system;
 
 pub struct SysfsBackend {
     paths: SysPaths,
@@ -207,13 +208,19 @@ impl Backend for SysfsBackend {
         let mut caps: Vec<Capability> = Vec::new();
 
         // ---- Power --------------------------------------------------------
-        caps.push(self.enum_cap(
-            "powermode",
-            "Power Mode",
-            "power-profile-performance-symbolic",
-            Group::Power,
-            &[("0", "Quiet"), ("1", "Balanced"), ("2", "Performance")],
-        ));
+        {
+            let mut power = self.enum_cap(
+                "powermode",
+                "Power Mode",
+                "power-profile-performance-symbolic",
+                Group::Power,
+                &[("0", "Quiet"), ("1", "Balanced"), ("2", "Performance")],
+            );
+            power
+                .infos
+                .push("Custom mode unlocks the fan and power-limit controls.");
+            caps.push(power);
+        }
         // Upstream documents that a fan-full-speed write through the wrong path
         // can hold the fans at maximum until reboot on this EC generation, so
         // it asks for confirmation first.
@@ -222,11 +229,14 @@ impl Backend for SysfsBackend {
             "Maximum Fan Speed",
             "fan-symbolic",
             Group::Power,
-            Some(
-                "On this EC generation a misplaced write can hold the fans at \
-                 maximum until reboot.",
-            ),
+            None,
         );
+        // The reference communicates a consequence on the card itself, before
+        // the user touches the control. This is the one write in the app that
+        // can leave hardware in a state the UI cannot undo.
+        max_fan
+            .warnings
+            .push("A write on the wrong path can hold the fans at maximum until reboot.");
         max_fan.dangerous = true;
         caps.push(max_fan);
 
@@ -280,6 +290,68 @@ impl Backend for SysfsBackend {
             caps.push(self.sensor_cap(key, label, "fan-symbolic", Group::Thermal, "rpm", false));
         }
 
+        // ---- Generic telemetry, needing no Legion driver -------------------
+        //
+        // The reference's sensor cards show utilization and clocks alongside
+        // temperatures. Everything below comes from /proc and cpufreq, so it
+        // works with legion_laptop unloaded — which is the difference between a
+        // grid that reads as "unsupported machine" and one that reads as a
+        // monitoring panel.
+        caps.push(
+            Builder::new("cpu_utilization", Kind::ReadOnly, Group::Thermal)
+                .label("CPU Utilization")
+                .icon("cpu-symbolic")
+                .unit("%")
+                .read(|| Ok(Value::Float(system::cpu_percent().unwrap_or(0.0))))
+                .build(),
+        );
+        if system::cpu_clock_mhz().is_some() {
+            caps.push(
+                Builder::new("cpu_clock", Kind::ReadOnly, Group::Thermal)
+                    .label("CPU Core Clock")
+                    .icon("cpu-symbolic")
+                    .unit("MHz")
+                    .read(|| Ok(Value::Float(system::cpu_clock_mhz().unwrap_or(0.0))))
+                    .build(),
+            );
+        }
+        caps.push(
+            Builder::new("memory_utilization", Kind::ReadOnly, Group::Thermal)
+                .label("Memory Utilization")
+                .icon("memory-symbolic")
+                .unit("%")
+                .read(|| Ok(Value::Float(system::memory_percent().unwrap_or(0.0))))
+                .build(),
+        );
+        if system::swap_percent().is_some() {
+            caps.push(
+                Builder::new("swap_utilization", Kind::ReadOnly, Group::Thermal)
+                    .label("Swap Utilization")
+                    .icon("memory-symbolic")
+                    .unit("%")
+                    .read(|| Ok(Value::Float(system::swap_percent().unwrap_or(0.0))))
+                    .build(),
+            );
+        }
+        if let Some((percent, used, total)) = system::disk_usage("/") {
+            caps.push(
+                Builder::new("disk_usage", Kind::ReadOnly, Group::Thermal)
+                    .label("Disk Usage")
+                    .icon("drive-harddisk-symbolic")
+                    .unit("%")
+                    .note(Box::leak(
+                        format!("{used:.0} GiB of {total:.0} GiB").into_boxed_str(),
+                    ))
+                    .read(|| {
+                        Ok(Value::Float(
+                            system::disk_usage("/").map(|d| d.0).unwrap_or(0.0),
+                        ))
+                    })
+                    .build(),
+            );
+            let _ = percent;
+        }
+
         // NVMe temperature, straight from the kernel's own monitoring. Available
         // on every machine with an NVMe drive and no driver involved — the
         // reference shows this in its disk sensor card.
@@ -308,6 +380,10 @@ impl Backend for SysfsBackend {
                 .label("Fan Curve")
                 .icon("air-conditioner-symbolic")
                 .unavailable("Fan curves are not supported by this model's firmware")
+                .info(
+                    "A fan curve maps temperature to fan speed, so the fans track \
+                     the workload instead of the firmware's fixed steps.",
+                )
                 .read(|| Ok(Value::Text("\u{2014}".into())))
                 .build(),
         );
@@ -487,6 +563,103 @@ impl Backend for SysfsBackend {
                     .build(),
             );
         }
+        // Time remaining, derived rather than reported: sysfs on this machine
+        // exposes no `time_to_empty_now`, but energy and rate are both present
+        // and the quotient is the same number.
+        caps.push(
+            Builder::new("battery_time", Kind::ReadOnly, Group::Battery)
+                .label("Time Remaining")
+                .icon("preferences-system-time-symbolic")
+                .unit("h")
+                .read(|| {
+                    Ok(Value::Float(
+                        paths::battery_time_hours().map(|t| t.0).unwrap_or(0.0),
+                    ))
+                })
+                .build(),
+        );
+
+        // The reference shows discharge extremes and time on battery. sysfs
+        // reports only the instantaneous rate, so these are observed over time
+        // by the refresh tick that already runs.
+        caps.push(
+            Builder::new("battery_discharge_min", Kind::ReadOnly, Group::Battery)
+                .label("Min Discharge Rate")
+                .icon("battery-symbolic")
+                .unit("W")
+                .note("Lowest seen this session")
+                // `0.0 W` would assert a measurement that was never taken. Say
+                // so instead.
+                .read(|| {
+                    Ok(match system::discharge_min_w() {
+                        Some(watts) => Value::Float(watts),
+                        None => Value::Text("None yet".into()),
+                    })
+                })
+                .build(),
+        );
+        caps.push(
+            Builder::new("battery_discharge_max", Kind::ReadOnly, Group::Battery)
+                .label("Max Discharge Rate")
+                .icon("battery-symbolic")
+                .unit("W")
+                .note("Highest seen this session")
+                .read(|| {
+                    Ok(match system::discharge_max_w() {
+                        Some(watts) => Value::Float(watts),
+                        None => Value::Text("None yet".into()),
+                    })
+                })
+                .build(),
+        );
+        caps.push(
+            Builder::new("battery_on_battery_since", Kind::ReadOnly, Group::Battery)
+                .label("On Battery Since")
+                .icon("preferences-system-time-symbolic")
+                .note("Since the adapter was last connected")
+                .read(|| {
+                    // "On adapter" rather than a dash. While plugged in there is
+                    // genuinely no duration, and saying so is more useful than a
+                    // placeholder that reads as "no data".
+                    Ok(Value::Text(match system::on_battery_seconds() {
+                        Some(secs) => system::format_duration(secs),
+                        None => "On adapter".into(),
+                    }))
+                })
+                .build(),
+        );
+
+        if let Some(home) = paths::battery_dir() {
+            let full_dir = home.clone();
+            let design_dir = home.clone();
+            caps.push(
+                Builder::new("battery_full_capacity", Kind::ReadOnly, Group::Battery)
+                    .label("Full Charge Capacity")
+                    .icon("battery-symbolic")
+                    .unit("Wh")
+                    .read(move || {
+                        let wh = paths::battery_float_in(&full_dir, "energy_full")
+                            .or_else(|| paths::battery_float_in(&full_dir, "charge_full"))
+                            .unwrap_or(0.0);
+                        Ok(Value::Float(wh / 1_000_000.0))
+                    })
+                    .build(),
+            );
+            caps.push(
+                Builder::new("battery_design_capacity", Kind::ReadOnly, Group::Battery)
+                    .label("Design Capacity")
+                    .icon("battery-symbolic")
+                    .unit("Wh")
+                    .read(move || {
+                        let wh = paths::battery_float_in(&design_dir, "energy_full_design")
+                            .or_else(|| paths::battery_float_in(&design_dir, "charge_full_design"))
+                            .unwrap_or(0.0);
+                        Ok(Value::Float(wh / 1_000_000.0))
+                    })
+                    .build(),
+            );
+        }
+
         caps.push(self.toggle_cap(
             "battery_conservation",
             "Battery Conservation",
@@ -590,6 +763,59 @@ mod tests {
                 "{} returned a placeholder while claiming to be available",
                 cap.key
             );
+        }
+    }
+
+    /// The two cards the reference uses status rows for must carry them: fan
+    /// control warns about the consequence of a wrong-path write, and the fan
+    /// curve explains what it would do on a machine that supports it. Neither
+    /// is visible in a widget dump, so it is asserted here.
+    #[test]
+    fn status_rows_are_populated_where_the_reference_has_them() {
+        let caps = SysfsBackend::new().capabilities();
+
+        let fan = caps
+            .iter()
+            .find(|c| c.key == "fan_fullspeed")
+            .expect("fan_fullspeed capability");
+        assert!(
+            !fan.warnings.is_empty(),
+            "fan control must carry its fan-latching warning row"
+        );
+
+        let curve = caps
+            .iter()
+            .find(|c| c.key == "fancurve")
+            .expect("fancurve capability");
+        assert!(
+            !curve.infos.is_empty(),
+            "the fan-curve card must carry an info row"
+        );
+    }
+
+    /// Item 5: the reference's battery card set, including the rates that can
+    /// only come from sampling.
+    #[test]
+    fn battery_page_capabilities_are_present() {
+        let caps = SysfsBackend::new().capabilities();
+        let has = |key: &str| caps.iter().any(|c| c.key == key);
+
+        for key in [
+            "battery_state",
+            "battery_capacity",
+            "battery_time",
+            "battery_power",
+            "battery_discharge_min",
+            "battery_discharge_max",
+            "battery_charge_now",
+            "battery_full_capacity",
+            "battery_design_capacity",
+            "battery_health",
+            "battery_on_battery_since",
+            "battery_voltage",
+            "battery_cycles",
+        ] {
+            assert!(has(key), "battery page is missing {key}");
         }
     }
 

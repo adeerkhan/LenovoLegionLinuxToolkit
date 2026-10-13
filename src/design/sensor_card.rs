@@ -11,7 +11,7 @@
 //! number is".
 
 use gtk4::prelude::*;
-use gtk4::{Align, Box as GtkBox, Grid, Label, Orientation, Scale};
+use gtk4::{Align, Box as GtkBox, Grid, Label, Orientation, ProgressBar};
 
 /// One row inside a sensor card.
 struct Row {
@@ -19,8 +19,10 @@ struct Row {
     /// How many decimal places to show. Reference uses 0 for temperature and
     /// RPM, 1 for clocks.
     precision: usize,
+    /// The sensor's ceiling, so the bar reads as a fraction of range.
+    max: f64,
     value: Label,
-    meter: Scale,
+    meter: ProgressBar,
 }
 
 /// A card of related readings, matching the reference's `SensorCardStyle`.
@@ -75,10 +77,9 @@ impl SensorCard {
         value.set_label("—");
         row.attach(&value, 1, 0, 1, 1);
 
-        let meter = Scale::with_range(Orientation::Horizontal, 0.0, meter_max, 1.0);
+        let meter = ProgressBar::new();
         meter.add_css_class("llt-meter");
-        meter.set_draw_value(false);
-        meter.set_sensitive(false);
+        meter.set_show_text(false);
         meter.set_size_request(40, 6);
         meter.set_valign(Align::Center);
         row.attach(&meter, 2, 0, 1, 1);
@@ -87,6 +88,7 @@ impl SensorCard {
         self.rows.push(Row {
             unit,
             precision,
+            max: meter_max,
             value,
             meter,
         });
@@ -101,15 +103,20 @@ impl SensorCard {
         };
         match value {
             Some(value) => {
-                row_data.value.set_label(&format!(
-                    "{:.*} {}",
-                    row_data.precision, value, row_data.unit
-                ));
-                row_data.meter.set_value(value);
+                // Temperatures are converted for display; the sensor always
+                // reports the unit it measured in. The meter is unaffected —
+                // a fraction of range is the same in either scale.
+                let (display, unit) = legiontoolkit::settings::for_display(value, row_data.unit);
+                row_data
+                    .value
+                    .set_label(&format!("{:.*} {}", row_data.precision, display, unit));
+                row_data
+                    .meter
+                    .set_fraction((value / row_data.max).clamp(0.0, 1.0));
             }
             None => {
                 row_data.value.set_label("—");
-                row_data.meter.set_value(0.0);
+                row_data.meter.set_fraction(0.0);
             }
         }
     }

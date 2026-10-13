@@ -115,8 +115,14 @@ pub struct Capability {
     /// `Some("°C")` — appended by the UI for display only.
     pub unit: Option<&'static str>,
 
-    /// For read-only capabilities, an extra hint under the value.
+    /// A description under the title, matching the reference's subtitle.
     pub note: Option<&'static str>,
+
+    /// Card status rows, matching the reference's `Warning` / `Info` / `Error` /
+    /// `Success`. These are how a control explains a consequence before the user
+    /// touches it, rather than after.
+    pub warnings: Vec<&'static str>,
+    pub infos: Vec<&'static str>,
 
     /// Marks a write that can leave hardware in a state the user cannot undo
     /// from the UI. Not a permission gate — a prompt, and a record that the
@@ -166,6 +172,8 @@ pub struct Builder {
     limits: Option<Limits>,
     unit: Option<&'static str>,
     note: Option<&'static str>,
+    warnings: Vec<&'static str>,
+    infos: Vec<&'static str>,
     dangerous: bool,
     read: Option<Box<dyn Fn() -> anyhow::Result<Value> + Send + Sync>>,
     write: Option<Box<dyn Fn(Value) -> anyhow::Result<()> + Send + Sync>>,
@@ -184,6 +192,8 @@ impl Builder {
             limits: None,
             unit: None,
             note: None,
+            warnings: Vec::new(),
+            infos: Vec::new(),
             dangerous: false,
             read: None,
             write: None,
@@ -226,6 +236,18 @@ impl Builder {
         self
     }
 
+    /// A caution shown on the card itself.
+    pub fn warning(mut self, text: &'static str) -> Self {
+        self.warnings.push(text);
+        self
+    }
+
+    /// A neutral explanation shown on the card itself.
+    pub fn info(mut self, text: &'static str) -> Self {
+        self.infos.push(text);
+        self
+    }
+
     /// Require confirmation before this write is allowed through.
     pub fn dangerous(mut self) -> Self {
         self.dangerous = true;
@@ -257,6 +279,8 @@ impl Builder {
             limits: self.limits,
             unit: self.unit,
             note: self.note,
+            warnings: self.warnings,
+            infos: self.infos,
             dangerous: self.dangerous,
             read: self
                 .read

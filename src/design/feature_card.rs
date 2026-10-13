@@ -19,9 +19,9 @@
 use std::sync::Arc;
 
 use adw::prelude::*;
-use gtk4::{Align, DropDown, Label, Orientation, Scale, SpinButton, Switch};
+use gtk4::{Align, DropDown, Label, Orientation, ProgressBar, SpinButton, Switch};
 
-use crate::design::card::LltCard;
+use crate::design::card::{LltCard, Severity, Status};
 use legiontoolkit::capability::{Capability, Kind, Limits, Value};
 
 /// A card rendered from one capability. Owns the capability so it can refresh
@@ -30,24 +30,39 @@ pub struct FeatureCard {
     card: LltCard,
     capability: Option<Arc<Capability>>,
     value_label: Option<Label>,
-    meter: Option<Scale>,
+    meter: Option<(ProgressBar, f64, f64)>,
     toggle: Option<Switch>,
     dropdown: Option<(DropDown, Vec<String>)>,
     spin: Option<SpinButton>,
-    /// Shown under the control while a write is running, or when one fails.
-    status: Label,
 }
 
 impl FeatureCard {
     pub fn new(cap: Capability) -> Self {
         let card = LltCard::new();
-        card.set_header(&cap.label, cap.note);
 
-        let status = Label::new(None);
-        status.add_css_class("llt-status");
-        status.set_halign(Align::Start);
-        status.set_wrap(true);
-        status.set_visible(false);
+        // The reference's card anatomy: icon, title, subtitle, then any status
+        // rows. Status comes from the capability so a control can explain a
+        // consequence before the user touches it.
+        // Info rows are explanatory and render even when the capability is
+        // unavailable: on an unsupported machine they are the only way to say
+        // what the control would do. A *warning* is suppressed there, because
+        // warning about a consequence the user cannot cause is noise.
+        let mut status: Vec<Status> = cap
+            .infos
+            .iter()
+            .map(|text| Status {
+                severity: Severity::Info,
+                text,
+            })
+            .collect();
+        if cap.unavailable_reason.is_none() {
+            status.extend(cap.warnings.iter().map(|text| Status {
+                severity: Severity::Warning,
+                text,
+            }));
+        }
+
+        card.set_header(cap.icon, &cap.label, cap.note, &status);
 
         let mut this = Self {
             card,
@@ -57,7 +72,6 @@ impl FeatureCard {
             dropdown: None,
             spin: None,
             capability: None,
-            status,
         };
 
         // Unavailable: say why, and stop. We do NOT render a disabled control —
@@ -76,7 +90,6 @@ impl FeatureCard {
         }
 
         this.capability = Some(Arc::new(cap));
-        this.card.append(&this.status);
         this
     }
 
@@ -105,22 +118,32 @@ impl FeatureCard {
             Some("rpm") => (0.0, 6000.0),
             _ => (0.0, 100.0),
         };
-        let meter = Scale::with_range(Orientation::Horizontal, min, max, 1.0);
+        // The reference's compact bar is a fixed 40x6 at the end of the row
+        // (`CompactProgressBarStyle`), not a full-width track. A bar that spans
+        // the card competes with the number instead of supporting it.
+        let meter = ProgressBar::new();
         meter.add_css_class("llt-meter");
-        meter.set_draw_value(false);
-        meter.set_hexpand(true);
-        meter.set_sensitive(false);
+        meter.set_show_text(false);
+        meter.set_size_request(40, 6);
+        meter.set_hexpand(false);
+        meter.set_valign(Align::Center);
+        meter.set_margin_start(8);
         row.append(&meter);
 
         self.value_label = Some(value);
-        self.meter = Some(meter);
-        self.card.append(&row);
+        // Store both bounds: a bar should read as position within the range,
+        // which is only the raw value when the range starts at zero.
+        self.meter = Some((meter, min, max));
+        self.card.set_accessory(&row);
     }
 
     fn build_toggle(&mut self) {
         let sw = Switch::new();
         sw.set_halign(Align::End);
         sw.set_valign(Align::Center);
+        // The control belongs in the header's accessory slot, as in the
+        // reference. It was previously built and then never added at all.
+        self.card.set_accessory(&sw);
         self.toggle = Some(sw);
     }
 
@@ -131,6 +154,7 @@ impl FeatureCard {
         let dd = DropDown::from_strings(&labels);
         dd.set_halign(Align::End);
         dd.set_valign(Align::Center);
+        self.card.set_accessory(&dd);
         self.dropdown = Some((dd, values));
     }
 
@@ -143,6 +167,7 @@ impl FeatureCard {
         let spin = SpinButton::with_range(limits.min, limits.max, limits.step);
         spin.set_halign(Align::End);
         spin.set_valign(Align::Center);
+        self.card.set_accessory(&spin);
         self.spin = Some(spin);
     }
 
@@ -164,7 +189,6 @@ impl FeatureCard {
             let active_now = cap.read().map(|v| matches!(v, Value::Bool(true)));
             let cap = Arc::clone(&cap);
             let parent = parent.clone();
-            let status = self.status.clone();
             let card = self.card.clone();
 
             sw.connect_state_set(move |sw, _| {
@@ -178,14 +202,13 @@ impl FeatureCard {
                     return glib::Propagation::Proceed;
                 }
 
-                confirm_and_write(&parent, &card, &status, &cap, Value::Bool(requested));
+                confirm_and_write(&parent, &card, &cap, Value::Bool(requested));
                 glib::Propagation::Proceed
             });
         }
 
         if let Some((dd, values)) = &self.dropdown {
             let cap = Arc::clone(&cap);
-            let status = self.status.clone();
             let parent = parent.clone();
             let card = self.card.clone();
             let values = values.clone();
@@ -202,14 +225,13 @@ impl FeatureCard {
                         return;
                     }
                 }
-                confirm_and_write(&parent, &card, &status, &cap, Value::Text(value));
+                confirm_and_write(&parent, &card, &cap, Value::Text(value));
                 let _ = dd_weak.clone();
             });
         }
 
         if let Some(spin) = &self.spin {
             let cap = Arc::clone(&cap);
-            let status = self.status.clone();
             let parent = parent.clone();
             let card = self.card.clone();
 
@@ -220,7 +242,7 @@ impl FeatureCard {
                         return;
                     }
                 }
-                confirm_and_write(&parent, &card, &status, &cap, requested);
+                confirm_and_write(&parent, &card, &cap, requested);
             });
         }
     }
@@ -245,6 +267,20 @@ impl FeatureCard {
 
         let unit = cap.unit.unwrap_or("");
 
+        // A temperature is converted for display only; the capability keeps
+        // reporting Celsius, which is what the hardware gives.
+        let value = match &value {
+            Value::Float(f) if !unit.is_empty() => {
+                Value::Float(legiontoolkit::settings::for_display(*f, unit).0)
+            }
+            other => other.clone(),
+        };
+        let unit = if cap.unit.is_some() {
+            legiontoolkit::settings::for_display(0.0, unit).1
+        } else {
+            unit
+        };
+
         if let Some(label) = &self.value_label {
             label.set_label(&match &value {
                 Value::Float(f) => {
@@ -264,13 +300,14 @@ impl FeatureCard {
             });
         }
 
-        if let Some(meter) = &self.meter {
+        if let Some((meter, min, max)) = &self.meter {
             let n = match &value {
                 Value::Float(f) => *f,
                 Value::Int(i) => *i as f64,
                 _ => 0.0,
             };
-            meter.set_value(n);
+            let span = (max - min).max(f64::EPSILON);
+            meter.set_fraction(((n - min) / span).clamp(0.0, 1.0));
         }
 
         if let Some(sw) = &self.toggle {
@@ -304,12 +341,11 @@ impl FeatureCard {
 fn confirm_and_write(
     parent: &impl gtk4::prelude::IsA<gtk4::Widget>,
     card: &LltCard,
-    status: &Label,
     cap: &Arc<Capability>,
     value: Value,
 ) {
     if !cap.dangerous {
-        submit_write(card, status, cap, value);
+        submit_write(card, cap, value);
         return;
     }
 
@@ -331,14 +367,13 @@ fn confirm_and_write(
 
     let cap = Arc::clone(cap);
     let card = card.clone();
-    let status = status.clone();
 
     dialog.choose(
         Some(parent),
         None::<&gtk4::gio::Cancellable>,
         move |response: glib::GString| {
             if response == "continue" {
-                submit_write(&card, &status, &cap, value.clone());
+                submit_write(&card, &cap, value.clone());
             }
         },
     );
@@ -349,10 +384,8 @@ fn confirm_and_write(
 /// glib 0.22 dropped the channel API, and `MainContext::invoke` requires `Send`
 /// — which GTK widgets are not in gtk4 0.11. So the worker hands its result over
 /// a `std::sync::mpsc` channel and a short local timer drains it.
-fn submit_write(card: &LltCard, status: &Label, cap: &Arc<Capability>, value: Value) {
-    status.set_label("Applying…");
-    status.add_css_class("applying");
-    status.set_visible(true);
+fn submit_write(card: &LltCard, cap: &Arc<Capability>, value: Value) {
+    card.set_outcome(Severity::Info, "Applying…");
     card.set_sensitive(false);
 
     let cap = Arc::clone(cap);
@@ -366,7 +399,6 @@ fn submit_write(card: &LltCard, status: &Label, cap: &Arc<Capability>, value: Va
     });
 
     let card = card.clone();
-    let status = status.clone();
     let receiver = std::rc::Rc::new(std::cell::RefCell::new(receiver));
 
     glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
@@ -375,16 +407,11 @@ fn submit_write(card: &LltCard, status: &Label, cap: &Arc<Capability>, value: Va
         match outcome {
             Some(outcome) => {
                 card.set_sensitive(true);
-                status.remove_css_class("applying");
                 match outcome {
-                    Ok(()) => {
-                        status.set_label("");
-                        status.set_visible(false);
-                    }
-                    Err(message) => {
-                        status.set_label(&message);
-                        status.set_visible(true);
-                    }
+                    // A successful write clears the row rather than announcing
+                    // itself: the control's new value is the confirmation.
+                    Ok(()) => card.set_outcome(Severity::Success, ""),
+                    Err(message) => card.set_outcome(Severity::Error, &message),
                 }
                 glib::ControlFlow::Break
             }

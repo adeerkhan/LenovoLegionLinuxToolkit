@@ -32,13 +32,14 @@ const GROUPS: [Group; 5] = [
 
 /// Sidebar entries, in the order the reference uses. The dashboard is always
 /// first; the rest are one per capability group, plus About.
-const NAV: [(&str, &str, &str); 7] = [
+const NAV: [(&str, &str, &str); 8] = [
     ("go-home-symbolic", "Dashboard", "dashboard"),
     ("power-profile-performance-symbolic", "Power", "power"),
     ("fan-symbolic", "Thermal", "thermal"),
     ("keyboard-brightness-symbolic", "Lighting", "lighting"),
     ("battery-symbolic", "Battery", "battery"),
     ("emblem-system-symbolic", "System", "system"),
+    ("preferences-system-symbolic", "Settings", "settings"),
     ("help-about-symbolic", "About", "about"),
 ];
 
@@ -70,8 +71,12 @@ fn warning_banner(title: &str) -> adw::Banner {
     banner
 }
 
+#[derive(Clone)]
 pub struct MainWindow {
-    window: ApplicationWindow,
+    pub(crate) window: ApplicationWindow,
+    /// The page stack, so `show_page` can select a section without walking the
+    /// widget tree.
+    stack: Stack,
 }
 
 impl MainWindow {
@@ -94,7 +99,10 @@ impl MainWindow {
             .build();
 
         let dashboard_cards: Rc<RefCell<Vec<FeatureCard>>> = Rc::new(RefCell::new(Vec::new()));
-        let mut pages = Pages::new();
+        // Shared: the refresh loop ticks the pages, and the struct needs them
+        // for rebuild-on-refresh and diagnostics. `Pages` is not `Copy`, so the
+        // loop borrows the same handle rather than taking ownership.
+        let pages = Rc::new(RefCell::new(Pages::new()));
 
         // ------------------------------------------------------------------
         // Pages
@@ -107,6 +115,7 @@ impl MainWindow {
         {
             let scroll = ScrolledWindow::builder()
                 .hscrollbar_policy(gtk4::PolicyType::Never)
+                .vexpand(true)
                 .build();
 
             let page = GtkBox::new(Orientation::Vertical, 24);
@@ -154,11 +163,10 @@ impl MainWindow {
         }
 
         // Capability-driven pages, built once and refreshed in place.
-        pages.rebuild(backend.as_ref());
-        for (id, widget, title) in pages.stack_pages() {
+        pages.borrow_mut().rebuild(backend.as_ref());
+        for (id, widget, title) in pages.borrow().stack_pages() {
             stack.add_titled(widget, Some(id), title);
         }
-
         // ------------------------------------------------------------------
         // Sidebar
         // ------------------------------------------------------------------
@@ -261,10 +269,13 @@ impl MainWindow {
         toolbar.add_top_bar(&header);
         window.set_content(Some(&toolbar));
 
-        // Warm the values before the first paint.
+        // Warm the values before the first paint, pages included. Without this
+        // a page shows dashes until the one-second refresh loop first fires,
+        // which reads as a broken page rather than a pending one.
         for card in dashboard_cards.borrow().iter() {
             card.refresh();
         }
+        pages.borrow().refresh();
 
         // ------------------------------------------------------------------
         // Refresh loop
@@ -273,18 +284,44 @@ impl MainWindow {
         // use. Readings are cheap sysfs reads, so this stays on the main thread
         // rather than paying for a worker and the channel that would come with
         // it.
+        // The tick is a fixed one second so that a change to the configured
+        // interval takes effect immediately, without rescheduling the timer.
+        // Readings are skipped until the interval has actually elapsed.
+        let pages_for_loop = Rc::clone(&pages);
+        let seconds_since_refresh = std::cell::Cell::new(0u32);
         glib::timeout_add_seconds_local(1, move || {
+            seconds_since_refresh.set(seconds_since_refresh.get() + 1);
+            let interval = pages_for_loop.borrow().refresh_seconds().max(1);
+            if seconds_since_refresh.get() < interval {
+                return glib::ControlFlow::Continue;
+            }
+            seconds_since_refresh.set(0);
+
             for card in dashboard_cards.borrow().iter() {
                 card.refresh();
             }
-            pages.refresh();
+            pages_for_loop.borrow().refresh();
             glib::ControlFlow::Continue
         });
 
-        Self { window }
+        Self { window, stack }
     }
 
     pub fn present(&self) {
         self.window.present();
+    }
+
+    /// Select a page by name. Used by `--shot` to capture a specific section.
+    ///
+    /// The transition is disabled for the switch. A stack crossfades between
+    /// children, and an offscreen capture taken mid-transition paints *both*
+    /// pages, which looks exactly like a layout bug: two sets of cards
+    /// interleaved. Capturing the settled state needs no animation.
+    pub fn show_page(&self, page: &str) {
+        let previous = self.stack.transition_type();
+        self.stack
+            .set_transition_type(gtk4::StackTransitionType::None);
+        self.stack.set_visible_child_name(page);
+        self.stack.set_transition_type(previous);
     }
 }

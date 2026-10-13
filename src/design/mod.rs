@@ -41,15 +41,53 @@ pub const STYLE_CSS: &str = r#"
     opacity: 0.55;
 }
 
+/* The card icon, matching the reference's 24px symbol beside the title. */
+.llt-card-icon {
+    opacity: 0.75;
+    margin-right: 10px;
+}
+
+/* Card status rows, the reference's Info / Warning / Error / Success lines.
+   Each is a 12px icon and a coloured message. */
+.llt-card-status {
+    margin-top: 4px;
+}
+
+.llt-card-status-text {
+    font-size: 11px;
+}
+
+.llt-status-info {
+    /* Deliberately not the accent: the accent is red here, and a red info row
+       reads as an error. Information should not look like a warning. */
+    color: #62a0ea;
+}
+
+.llt-status-warning {
+    color: @warning_color;
+}
+
+.llt-status-error {
+    color: @error_color;
+}
+
+.llt-status-success {
+    color: @success_color;
+}
+
 /* The compact 40x6 bar from the reference SensorsControlV2. */
 .llt-meter {
     min-width: 40px;
     min-height: 6px;
 }
 
+/* GtkProgressBar draws progress inside a trough. The reference bar is a solid
+   accent fill 6px high, so the trough is darkened and the fill takes the accent. */
 .llt-meter trough {
     min-height: 6px;
+    min-width: 40px;
     border-radius: 3px;
+    background-color: alpha(currentColor, 0.18);
 }
 
 .llt-meter progress {
@@ -61,6 +99,13 @@ pub const STYLE_CSS: &str = r#"
 .llt-value {
     font-weight: 500;
     font-size: 12px;
+}
+
+.llt-subheading {
+    font-size: 15px;
+    font-weight: 600;
+    opacity: 0.85;
+    margin: 18px 0 8px 0;
 }
 
 .llt-group-title {
@@ -148,16 +193,28 @@ pub fn init() {
         );
     }
 
-    adw::StyleManager::default().set_color_scheme(adw::ColorScheme::Default);
+    apply_color_scheme(legiontoolkit::settings::current().color_scheme);
 }
 
-/// Cycle System → Light → Dark → System, mirroring the reference's theme
-/// toggle.
-pub fn cycle_color_scheme() {
-    let style = adw::StyleManager::default();
-    style.set_color_scheme(match style.color_scheme() {
-        adw::ColorScheme::Default => adw::ColorScheme::ForceLight,
-        adw::ColorScheme::ForceLight => adw::ColorScheme::ForceDark,
-        _ => adw::ColorScheme::Default,
+/// Apply a stored preference. Called at startup and whenever Settings changes.
+pub fn apply_color_scheme(scheme: legiontoolkit::settings::ColorScheme) {
+    use legiontoolkit::settings::ColorScheme;
+    adw::StyleManager::default().set_color_scheme(match scheme {
+        ColorScheme::System => adw::ColorScheme::Default,
+        ColorScheme::Light => adw::ColorScheme::ForceLight,
+        ColorScheme::Dark => adw::ColorScheme::ForceDark,
     });
+}
+
+/// Cycle System → Light → Dark → System, mirroring the reference's theme toggle.
+pub fn cycle_color_scheme() {
+    use legiontoolkit::settings::ColorScheme;
+    let style = adw::StyleManager::default();
+    let next = match style.color_scheme() {
+        adw::ColorScheme::Default => ColorScheme::Light,
+        adw::ColorScheme::ForceLight => ColorScheme::Dark,
+        _ => ColorScheme::System,
+    };
+    let _ = legiontoolkit::settings::update(|s| s.color_scheme = next);
+    apply_color_scheme(next);
 }

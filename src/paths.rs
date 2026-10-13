@@ -288,3 +288,36 @@ pub fn battery_text(attr: &str) -> String {
         .map(|s| s.trim().to_string())
         .unwrap_or_default()
 }
+
+/// Remaining or required time on the current charge, in hours.
+///
+/// Returns `(hours, is_charging)`. `power_now` is a rate in µW, so the quotient
+/// is in hours directly. Discharge is reported by some drivers as a negative
+/// rate and others as a positive one, so the magnitude is taken rather than
+/// trusting the sign.
+pub fn battery_time_hours() -> Option<(f64, bool)> {
+    let dir = battery_dir()?;
+    let status = std::fs::read_to_string(dir.join("status")).ok()?;
+    let charging = status.trim() == "Charging";
+
+    let now =
+        battery_float_in(&dir, "energy_now").or_else(|| battery_float_in(&dir, "charge_now"))?;
+
+    // A rate of zero means the firmware has no estimate to give, not "forever".
+    let rate = battery_float_in(&dir, "power_now")
+        .or_else(|| battery_float_in(&dir, "current_now"))?
+        .abs();
+    if rate < 1.0 {
+        return None;
+    }
+
+    let energy = if charging {
+        let full = battery_float_in(&dir, "energy_full")
+            .or_else(|| battery_float_in(&dir, "charge_full"))?;
+        (full - now).max(0.0)
+    } else {
+        now
+    };
+
+    Some((energy / rate, charging))
+}
