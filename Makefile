@@ -1,33 +1,21 @@
 # Legion Toolkit — local build and install.
 #
-# The Makefile owns the install paths. install.sh, and later the RPM and DEB
-# specs, read them from here, so there is exactly one place to change where a
-# file lands.
+# This Makefile owns the build and the *default* install prefix. install.sh
+# derives the per-file destinations from the same PREFIX; the two must stay in
+# step, and each says so at the point where it matters.
 #
-# The variable that matters most is HELPER_PATH. The polkit action declares the
-# same path in `org.freedesktop.policykit.exec.path`, and polkit matches it
-# exactly: if the helper is installed anywhere else, every privileged write is
-# refused and each control looks broken for reasons the user cannot see. The
-# installed policy is therefore rendered from this variable, not shipped as a
-# fixed file.
+# The variable that matters most is HELPER_PATH. It is baked into the GUI binary
+# at build time, and the polkit action declares the same path in
+# `org.freedesktop.policykit.exec.path`. polkit matches that annotation
+# literally: if the two diverge, every privileged write is refused and each
+# control looks broken for reasons the user cannot see.
 
-PREFIX       ?= /usr/local
-BINDIR       ?= $(PREFIX)/bin
-LIBEXECDIR   ?= $(PREFIX)/libexec
-DATADIR      ?= $(PREFIX)/share
-DESKTOPDIR   ?= $(DATADIR)/applications
-ICONDIR      ?= $(DATADIR)/icons/hicolor/128x128/apps
-POLKITDIR    ?= $(DATADIR)/polkit-1/actions
+PREFIX      ?= /usr/local
+HELPER_PATH ?= $(PREFIX)/libexec/legiontoolkit-helper
 
-# Absolute path of the helper. Must match the polkit policy's exec.path
-# annotation; `make distcheck` verifies the shape.
-HELPER_PATH  ?= $(PREFIX)/libexec/legiontoolkit-helper
+CARGO      ?= cargo
 
-CARGO       ?= cargo
-INSTALL     ?= install
-SED         ?= sed
-
-.PHONY: all check build install uninstall clean distcheck print-paths icon
+.PHONY: all check build install uninstall clean distcheck icon
 
 all: build
 build:
@@ -37,10 +25,8 @@ build:
 	# helper and probe are also built without GTK so they cannot pull a GUI
 	# runtime into a root process.
 	#
-	# LEGIONTOOLKIT_HELPER_PATH is baked into the GUI binary so it agrees with
-	# wherever `install` puts the helper. The polkit policy declares the same
-	# path, and polkit matches it exactly — if the two diverge every write is
-	# refused in a way that looks like the feature is broken.
+	# LEGIONTOOLKIT_HELPER_PATH must agree with where install.sh puts the
+	# helper. Both derive it from PREFIX; see privilege::HELPER_PATH.
 	LEGIONTOOLKIT_HELPER_PATH='$(HELPER_PATH)' $(CARGO) build --release --bin legiontoolkit
 	$(CARGO) build --release --bin legiontoolkit-helper --no-default-features
 	$(CARGO) build --release --bin legiontoolkit-keyboard-probe --no-default-features
@@ -53,17 +39,6 @@ check:
 	$(CARGO) clippy --all-targets -- -D warnings
 	$(CARGO) test --no-default-features
 
-# Emit the path variables as shell assignments for install.sh to eval.
-print-paths:
-	@echo "PREFIX='$(PREFIX)'"
-	@echo "BINDIR='$(BINDIR)'"
-	@echo "LIBEXECDIR='$(LIBEXECDIR)'"
-	@echo "DATADIR='$(DATADIR)'"
-	@echo "DESKTOPDIR='$(DESKTOPDIR)'"
-	@echo "ICONDIR='$(ICONDIR)'"
-	@echo "POLKITDIR='$(POLKITDIR)'"
-	@echo "HELPER_PATH='$(HELPER_PATH)'"
-
 install: build
 	./install.sh install
 
@@ -73,14 +48,13 @@ uninstall:
 icon:
 	python3 packaging/make-icon.py
 
-# Catch path mistakes before they become silent write failures on a user's
-# machine.
-distcheck: build
+# Prints where things will land, without touching the system or compiling.
+# The fast way to sanity-check a PREFIX override before committing to it.
+distcheck:
 	@echo "PREFIX      = $(PREFIX)"
 	@echo "HELPER_PATH = $(HELPER_PATH)"
-	@echo "POLKITDIR   = $(POLKITDIR)"
-	@test -f packaging/org.legiontoolkit.helper.policy || \
-		{ echo "missing packaging/org.legiontoolkit.helper.policy"; exit 1; }
+	@echo "policy      = $(PREFIX)/share/polkit-1/actions"
+	@echo "binaries    = $(PREFIX)/bin"
 	@case "$(HELPER_PATH)" in \
 	    */legiontoolkit-helper) ;; \
 	    *) echo "HELPER_PATH must end in /legiontoolkit-helper"; exit 1 ;; \

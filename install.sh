@@ -1,85 +1,133 @@
 #!/usr/bin/env bash
-# Install and uninstall Legion Toolkit, driven entirely by the Makefile's path
-# variables so there is one definition of where each file lands.
+# Install and uninstall Legion Toolkit.
 #
-#   ./install.sh install   [PREFIX=...]
-#   ./install.sh uninstall [PREFIX=...]
+# Paths are derived from PREFIX here. The Makefile derives the same paths (and
+# HELPER_PATH, which it bakes into the GUI binary) from the same PREFIX — keep
+# the two in step.
 #
-# `make install` is the usual entry point. This script exists separately so the
-# RPM and DEB specs, the local install and the CI can share one implementation.
+#   PREFIX=/path ./install.sh install
+#   PREFIX=/path ./install.sh uninstall
+#
+# Or through the Makefile, which forwards PREFIX as an environment variable:
+#   make install PREFIX=/path
+#
+# `make install` is the usual entry point. This script is separate so the RPM
+# and DEB specs, the local install and CI can share one implementation.
 
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-mode="${1:-}"
+PREFIX="${PREFIX:-/usr/local}"
 
-# Read the paths from the Makefile instead of restating them, so a change to the
-# Makefile cannot be forgotten here.
-eval "$(make -s -C "$here" print-paths)"
+# Mirrored in the Makefile.
+BINDIR="$PREFIX/bin"
+LIBEXECDIR="$PREFIX/libexec"
+DESKTOPDIR="$PREFIX/share/applications"
+ICONTHEMEDIR="$PREFIX/share/icons/hicolor"
+POLKITDIR="$PREFIX/share/polkit-1/actions"
+HELPER_PATH="$PREFIX/libexec/legiontoolkit-helper"
 
-render_policy() {
-    # The shipped policy names the helper at the default location. When the
-    # install prefix differs, substitute the real path — polkit matches
-    # `exec.path` exactly, and a mismatch makes every write fail silently.
-    "$SED_PATH" "$here/packaging/org.legiontoolkit.helper.policy" \
-        -e "s|@POLKIT_ACTION@|org.legiontoolkit.helper|g" \
-        -e "s|@HELPER_PATH@|$HELPER_PATH|g"
+POLICY="org.legiontoolkit.helper.policy"
+BINARIES="legiontoolkit legiontoolkit-helper legiontoolkit-keyboard-probe"
+ICON_SIZES="16 22 24 32 48 64 128 256 512"
+
+die() {
+    echo "error: $*" >&2
+    exit 1
 }
 
-# `sed` is needed by the renderer; take it from the Makefile's variable if set.
-SED_PATH="${SED:-sed}"
+# The policy is rendered to a temporary file and installed with `install`
+# rather than written straight into place. A redirect can leave a truncated
+# file behind if it fails partway, and a malformed .policy makes polkit log an
+# error on every action lookup — a bad state to discover by reading logs.
+tmp_policy=""
+cleanup() {
+    [ -n "$tmp_policy" ] && rm -f "$tmp_policy"
+    return 0
+}
+trap cleanup EXIT
+
+render_policy() {
+    # polkit matches exec.path literally. A mismatch refuses every write in a
+    # way that looks like the feature is broken, so the rendered file always
+    # names exactly where the helper landed.
+    sed -e "s|@POLKIT_ACTION@|org.legiontoolkit.helper|g" \
+        -e "s|@HELPER_PATH@|$HELPER_PATH|g" \
+        "$here/packaging/org.legiontoolkit.helper.policy"
+}
+
+mode="${1:-}"
 
 case "$mode" in
-    install)
-        for bin in legiontoolkit legiontoolkit-helper legiontoolkit-keyboard-probe; do
-            test -x "target/release/$bin" || {
-                echo "error: target/release/$bin is missing — run make build" >&2
-                exit 1
-            }
-        done
-
-        install -Dm755 target/release/legiontoolkit \
-                          "$BINDIR/legiontoolkit"
-        install -Dm755 target/release/legiontoolkit-helper \
-                          "$LIBEXECDIR/legiontoolkit-helper"
-        install -Dm755 target/release/legiontoolkit-keyboard-probe \
-                          "$BINDIR/legiontoolkit-keyboard-probe"
-        install -Dm644 packaging/legiontoolkit.desktop \
-                          "$DESKTOPDIR/legiontoolkit.desktop"
-        install -Dm644 packaging/icons/hicolor/128x128/apps/legiontoolkit.png \
-                          "$ICONDIR/legiontoolkit.png"
-        # Rendered last: the action id and the helper path must agree with
-        # wherever the helper just landed.
-        mkdir -p "$POLKITDIR"
-        render_policy > "$POLKITDIR/org.legiontoolkit.helper.policy"
-        chmod 644 "$POLKITDIR/org.legiontoolkit.helper.policy"
-
-        # polkit reads actions from a fixed directory, so a non-standard prefix
-        # needs the user to link it in. Warn rather than fail.
-        if [ "$POLKITDIR" != "/usr/share/polkit-1/actions" ] && \
-           [ "$POLKITDIR" != "/usr/local/share/polkit-1/actions" ]; then
-            echo "note: polkit reads its actions from a fixed directory."
-            echo "      link $POLKITDIR/org.legiontoolkit.helper.policy there"
-            echo "      or privileged writes will not authorise."
-        fi
-
-        echo "installed to $PREFIX"
-        echo "  binaries   $BINDIR"
-        echo "  helper     $LIBEXECDIR"
-        echo "  policy     $POLKITDIR"
-        echo "  desktop    $DESKTOPDIR"
-        ;;
-    uninstall)
-        rm -f "$BINDIR/legiontoolkit" \
-              "$LIBEXECDIR/legiontoolkit-helper" \
-              "$BINDIR/legiontoolkit-keyboard-probe" \
-              "$DESKTOPDIR/legiontoolkit.desktop" \
-              "$ICONDIR/legiontoolkit.png" \
-              "$POLKITDIR/org.legiontoolkit.helper.policy"
-        echo "removed from $PREFIX"
-        ;;
+    install | uninstall) ;;
     *)
-        echo "usage: $0 {install|uninstall}" >&2
+        echo "usage: PREFIX=/path $0 {install|uninstall}" >&2
         exit 64
         ;;
 esac
+
+# Refuse stray arguments rather than ignoring them. PREFIX is an environment
+# variable, so `./install.sh install PREFIX=/x` looks like it works and then
+# installs to /usr/local — which, run as root, succeeds silently in the wrong
+# place. Failing here costs one line and prevents that.
+shift
+if [ $# -gt 0 ]; then
+    echo "error: unexpected argument '$1'." >&2
+    echo "       PREFIX is an environment variable: PREFIX=$1 $0" >&2
+    exit 64
+fi
+
+if [ "$mode" = install ]; then
+    # Resolved against $here, not the working directory, so running this script
+    # from anywhere else still installs what it just checked.
+    for bin in $BINARIES; do
+        test -x "$here/target/release/$bin" \
+            || die "target/release/$bin is missing — run make build"
+    done
+
+    install -Dm755 "$here/target/release/legiontoolkit" \
+                      "$BINDIR/legiontoolkit"
+    install -Dm755 "$here/target/release/legiontoolkit-helper" \
+                      "$LIBEXECDIR/legiontoolkit-helper"
+    install -Dm755 "$here/target/release/legiontoolkit-keyboard-probe" \
+                      "$BINDIR/legiontoolkit-keyboard-probe"
+
+    install -Dm644 "$here/packaging/legiontoolkit.desktop" \
+                      "$DESKTOPDIR/legiontoolkit.desktop"
+    # Every size the generator produces is installed, so the icon is sharp at
+    # each size and gtk-update-icon-cache has something real to index.
+    for size in $ICON_SIZES; do
+        install -Dm644 "$here/packaging/icons/hicolor/${size}x${size}/apps/legiontoolkit.png" \
+                          "$ICONTHEMEDIR/${size}x${size}/apps/legiontoolkit.png"
+    done
+
+    # Rendered last: the action id and the helper path must agree with wherever
+    # the helper just landed.
+    tmp_policy="$(mktemp)"
+    render_policy > "$tmp_policy"
+    install -Dm644 "$tmp_policy" "$POLKITDIR/$POLICY"
+
+    # Best effort: without these the entry and icon can linger until the next
+    # login, and a missing tool is not a reason to fail the install.
+    if command -v update-desktop-database >/dev/null; then
+        update-desktop-database -q "$DESKTOPDIR" 2>/dev/null || true
+    fi
+    if command -v gtk-update-icon-cache >/dev/null; then
+        gtk-update-icon-cache -q -t -f "$ICONTHEMEDIR" 2>/dev/null || true
+    fi
+
+    echo "installed to $PREFIX"
+    echo "  binaries   $BINDIR"
+    echo "  helper     $LIBEXECDIR"
+    echo "  policy     $POLKITDIR/$POLICY"
+    echo "  desktop    $DESKTOPDIR"
+    echo "  icons      $ICONTHEMEDIR"
+else
+    rm -f "$BINDIR/legiontoolkit" \
+          "$LIBEXECDIR/legiontoolkit-helper" \
+          "$BINDIR/legiontoolkit-keyboard-probe" \
+          "$DESKTOPDIR/legiontoolkit.desktop" \
+          "$POLKITDIR/$POLICY"
+    rm -f "$ICONTHEMEDIR"/*/apps/legiontoolkit.png
+    echo "removed from $PREFIX"
+fi

@@ -12,10 +12,6 @@
 
 use std::process::Command;
 
-/// Name of the polkit action, which must match the `org.freedesktop.policykit.
-/// exec.path` annotation in the shipped `.policy` file exactly.
-pub const HELPER_ACTION: &str = "org.legiontoolkit.helper";
-
 /// Absolute path of the helper binary.
 ///
 /// Baked in at build time by the Makefile, which passes
