@@ -1,0 +1,11 @@
+# Normalise line endings; Rust and GTK resource files are LF-only.
+* text=auto
+
+# Generated or vendored assets should never be rewritten.
+*.png binary
+*.ico binary
+*.svg text
+Cargo.lock linguist-generated
+
+# Documentation renders best with trailing whitespace preserved intact.
+*.md whitespace=-blank-at-eol

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  Polkit action for the privileged helper.
+
+  The `org.freedesktop.policykit.exec.path` annotation must match the absolute
+  install path of the helper binary exactly. If the two ever diverge, pkexec
+  refuses the request and every write in the application reports as refused —
+  which looks like a broken feature rather than a packaging bug. Keep this file
+  and packaging/legiontoolkit.spec in step.
+
+  `auth_admin` (not `auth_admin_keep`) is deliberate: writing to the embedded
+  controller is not something to silently remember. A user who is going to
+  change their fan curve can re-authenticate; a user who is flipping a toggle
+  in an automation profile should not find the session permanently authorised.
+-->
+<policyconfig>
+
+  <vendor>Legion Linux Toolkit</vendor>
+  <vendor_url>https://github.com/adeerkhan/LenovoLegionLinuxToolkit</vendor_url>
+
+  <action id="org.legiontoolkit.helper">
+    <description>Write hardware settings on a Lenovo Legion laptop</description>
+    <description xml:lang="en">Write hardware settings on a Lenovo Legion laptop</description>
+    <message>
+      Authentication is required to change hardware settings on your Lenovo Legion laptop.
+    </message>
+    <message xml:lang="en">
+      Authentication is required to change hardware settings on your Lenovo Legion laptop.
+    </message>
+
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/legiontoolkit-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">true</annotate>
+  </action>
+
+</policyconfig>

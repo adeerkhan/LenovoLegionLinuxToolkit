@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test (headless)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      # The default-features build needs GTK; this job deliberately does not,
+      # to prove the capability, path-resolution and security-policy layers stay
+      # testable without a display.
+      - name: Test the library without GTK
+        run: cargo test --lib --no-default-features --verbose
+
+      - name: Check the privileged helper
+        run: cargo build --bin legiontoolkit-helper --no-default-features --verbose
+
+      - name: Lint
+        run: cargo clippy --lib --no-default-features -- -D warnings
+
+  build-gui:
+    name: Build GUI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GTK 4 and libadwaita
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-4-dev libadwaita-1-dev libpango1.0-dev \
+            libgdk-pixbuf-2.0-dev libcairo2-dev libgraphene-1.0-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-action@stable
+
+      - name: Build
+        run: cargo build --release --bins --verbose
+
+      - name: Vet the helper's allowlist
+        run: cargo test --lib --no-default-features

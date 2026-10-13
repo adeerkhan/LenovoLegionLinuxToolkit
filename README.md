@@ -1,0 +1,182 @@
+# Legion Toolkit
+
+A native GTK 4 / libadwaita control panel for Lenovo Legion laptops.
+
+Written in Rust, on GTK 4 and libadwaita — the toolkits that give a Linux
+desktop application its native look and behaviour, so this reads as a
+first-class citizen of the GNOME desktop rather than a port of a Windows
+application.
+
+**[Project plan](docs/PLAN.md)** · **[Hardware compatibility](docs/hardware-compatibility.md)** · **[Architecture](docs/architecture.md)**
+
+---
+
+## What it does
+
+A dashboard that shows what your laptop can actually do, and lets you control it:
+
+| Section   | Controls |
+|-----------|----------|
+| **Power**      | Power mode (quiet / balanced / performance / custom), maximum fan speed |
+| **Thermal**    | CPU and GPU temperature, fan RPM |
+| **Lighting**   | Keyboard backlight, Y-logo light |
+| **Battery**    | Charge level and status, battery conservation |
+| **System**     | Fn-lock, touchpad, camera power, always-on USB charging |
+
+Readings are unprivileged. Individual writes escalate through polkit to a small
+helper binary, so the application itself never runs as root — which keeps the
+tray icon and desktop notifications working.
+
+### Capability-first, not model-first
+
+Legion hardware differs enormously between models. This laptop, a Legion 5
+15IRX10, has **no fan curve and no power limits at all**. Rather than show a
+broken page, the application builds its UI from a capability report generated
+at runtime, and a control that is unsupported explains *why* rather than
+greying out mysteriously.
+
+That is why the same binary works across the whole Legion range. Adding a
+laptop that supports something new means adding a capability that reports
+itself available — there is no `match model` anywhere in the presentation layer.
+
+---
+
+## Requirements
+
+- Linux with GTK 4.12 or newer and libadwaita 1.4 or newer
+- The `legion_laptop` kernel module (`LenovoLegionLinux`) for full control
+- `polkit` for privileged writes
+
+Anything backed by `ideapad_acpi` — battery conservation, Fn-lock, touchpad,
+camera, always-on USB — works **without** the kernel module, so the dashboard
+shows live data out of the box.
+
+## Installation
+
+### Fedora
+
+Not yet packaged in the official repositories — build from source, below.
+System prerequisites:
+
+```sh
+sudo dnf install \
+    gtk4-devel libadwaita-devel pango-devel \
+    gdk-pixbuf2-devel cairo-gobject-devel graphene-devel
+```
+
+### Ubuntu / Debian
+
+Not yet packaged — build from source, below. System prerequisites:
+
+```sh
+sudo apt install \
+    libgtk-4-dev libadwaita-1-dev libpango1.0-dev \
+    libgdk-pixbuf-2.0-dev libcairo2-dev libgraphene-1.0-dev
+```
+
+### Arch Linux
+
+Not yet packaged. Build from source, below.
+
+### Hardware permissions
+
+Reading hardware needs no special permissions. Writing does, and the
+application handles it by escalating per write.
+
+To let the keyboard backlight be controlled without a password prompt, install
+the udev rule (optional — the application falls back to prompting):
+
+```sh
+# /etc/udev/rules.d/99-legion-toolkit.rules
+ACTION=="add|change", SUBSYSTEM=="leds", KERNEL=="platform::kbd_backlight*", MODE="0666"
+```
+
+then reload:
+
+```sh
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+---
+
+## Building from source
+
+```sh
+git clone https://github.com/adeerkhan/legion-toolkit.git
+cd legion-toolkit
+cargo build --release
+sudo cargo install --path . --root /usr/local
+```
+
+Run without installing:
+
+```sh
+cargo run --release
+```
+
+### Useful commands
+
+```sh
+# Show the full capability set for this machine, including what is missing,
+# using a mock backend — no hardware required.
+LEGIONTOOLKIT_MOCK=1 cargo run --release
+
+# Run the capability, path-resolution and security-policy tests.
+# Needs no display installed.
+cargo test --lib --no-default-features
+
+# Determine whether this keyboard supports four-zone RGB. Read-only: it only
+# ever issues HIDIOCGFEATURE, never a write.
+sudo ./target/debug/legiontoolkit-keyboard-probe
+
+# Check the privileged helper's allowlist.
+./target/release/legiontoolkit-helper set <capability-key> <value>
+```
+
+---
+
+## Current status
+
+Early development. The read-only dashboard, the capability layer and the
+privilege escalation path are complete and tested. Fan-curve editing is
+architectured but not implemented, because the development machine does not
+support fan curves — the honest thing was to build the suppression path first.
+
+Verified on a Lenovo Legion 5 15IRX10 (83LY, BIOS QNCN38WW), kernel 7.2,
+Fedora 44.
+
+---
+
+## Thanks
+
+This project stands on the shoulders of a lot of reverse engineering done by
+other people, and would not exist without either of these:
+
+- **[LenovoLegionLinux](https://github.com/johnfanv2/LenovoLegionLinux)** by
+  John Fan — the kernel driver and userspace toolkit that makes every
+  capability this application exposes possible. The footnotes in its
+  `doc/FEATURES_AND_TESTING.md` were the single most useful reference in
+  building the hardware layer here, and its documentation of the DMI allowlist
+  and the fan-curve capability matrix is what made writing correct code on an
+  undocumented machine possible.
+
+- **[Lenovo Legion Toolkit](https://github.com/BartoszCichecki/LenovoLegionToolkit)**
+  by Bartosz Cichecki — the Windows original, and the reference for the
+  feature set, information architecture and visual language this project
+  reproduces on Linux. Its card-based design system and its habit of hiding
+  unsupported controls rather than breaking them are the two ideas borrowed
+  most directly.
+
+Also thanks to legendk95 on Discord for reverse-engineering how to talk to the
+Legion keyboard in the first place, which is what makes the RGB probe useful to
+anyone other than the person who wrote it.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
+
+The two projects above are licensed GPL-2.0 and GPL-3.0 respectively. No code
+is copied from either; this project reimplements interfaces and behaviour, and
+communicates across documented boundaries.
