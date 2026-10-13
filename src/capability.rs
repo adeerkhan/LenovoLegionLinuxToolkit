@@ -118,6 +118,11 @@ pub struct Capability {
     /// For read-only capabilities, an extra hint under the value.
     pub note: Option<&'static str>,
 
+    /// Marks a write that can leave hardware in a state the user cannot undo
+    /// from the UI. Not a permission gate — a prompt, and a record that the
+    /// consequence is understood.
+    pub dangerous: bool,
+
     read: Box<dyn Fn() -> anyhow::Result<Value> + Send + Sync>,
     write: Option<Box<dyn Fn(Value) -> anyhow::Result<()> + Send + Sync>>,
 }
@@ -161,6 +166,7 @@ pub struct Builder {
     limits: Option<Limits>,
     unit: Option<&'static str>,
     note: Option<&'static str>,
+    dangerous: bool,
     read: Option<Box<dyn Fn() -> anyhow::Result<Value> + Send + Sync>>,
     write: Option<Box<dyn Fn(Value) -> anyhow::Result<()> + Send + Sync>>,
 }
@@ -178,6 +184,7 @@ impl Builder {
             limits: None,
             unit: None,
             note: None,
+            dangerous: false,
             read: None,
             write: None,
         }
@@ -219,6 +226,12 @@ impl Builder {
         self
     }
 
+    /// Require confirmation before this write is allowed through.
+    pub fn dangerous(mut self) -> Self {
+        self.dangerous = true;
+        self
+    }
+
     pub fn read(mut self, f: impl Fn() -> anyhow::Result<Value> + Send + Sync + 'static) -> Self {
         self.read = Some(Box::new(f));
         self
@@ -244,6 +257,7 @@ impl Builder {
             limits: self.limits,
             unit: self.unit,
             note: self.note,
+            dangerous: self.dangerous,
             read: self
                 .read
                 .unwrap_or_else(|| Box::new(|| Ok(Value::Text("—".into())))),

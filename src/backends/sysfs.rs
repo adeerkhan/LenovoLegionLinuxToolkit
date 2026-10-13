@@ -214,13 +214,21 @@ impl Backend for SysfsBackend {
             Group::Power,
             &[("0", "Quiet"), ("1", "Balanced"), ("2", "Performance")],
         ));
-        caps.push(self.toggle_cap(
+        // Upstream documents that a fan-full-speed write through the wrong path
+        // can hold the fans at maximum until reboot on this EC generation, so
+        // it asks for confirmation first.
+        let mut max_fan = self.toggle_cap(
             "fan_fullspeed",
             "Maximum Fan Speed",
             "fan-symbolic",
             Group::Power,
-            Some("Apply sparingly; on this EC a wrong-path write can latch the fans."),
-        ));
+            Some(
+                "On this EC generation a misplaced write can hold the fans at \
+                 maximum until reboot.",
+            ),
+        );
+        max_fan.dangerous = true;
+        caps.push(max_fan);
 
         // ---- Thermal ------------------------------------------------------
         for (key, label, icon) in [

@@ -47,6 +47,12 @@ impl LltCard {
     pub fn append(&self, widget: &impl gtk4::prelude::IsA<gtk4::Widget>) {
         self.body.append(widget);
     }
+
+    /// Disable every control in the card. Used while a write is in flight, so
+    /// the user cannot queue a second one on top of an unfinished first.
+    pub fn set_sensitive(&self, sensitive: bool) {
+        self.root.set_sensitive(sensitive);
+    }
 }
 
 impl Default for LltCard {

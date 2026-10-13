@@ -487,6 +487,9 @@ FodyWeavers.xsd
 /.reasonix
 
 
+# Working notes, kept local only.
+/docs
+
 # --- Rust -------------------------------------------------------------------
 /target
 Cargo.lock is committed for a binary: reproducible builds matter more than the

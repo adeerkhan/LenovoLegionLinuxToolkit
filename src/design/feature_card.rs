@@ -1,31 +1,41 @@
-//! The auto-hiding capability card.
+//! The capability card: renders one capability and, when it is writable,
+//! performs the write.
 //!
-//! This is the behaviour the whole design depends on. The Windows reference's
-//! `AbstractRefreshingControl` hides any card that throws
-//! `NotSupportedException` while refreshing, which is how one dashboard stays
-//! correct across machines with wildly different feature sets.
+//! Two ideas carry most of the weight here.
 //!
-//! We go one step further and explain *why* a control is missing, because on
-//! Linux the answer is usually one of two different things — "the driver is not
-//! loaded" versus "your hardware does not have this" — and a greyed-out widget
-//! with no reason is the single most common complaint about control panels.
+//! The first is the Windows reference's `AbstractRefreshingControl`: a card
+//! whose capability is unavailable explains itself and stops, rather than
+//! rendering a disabled control. On Linux the difference matters more than it
+//! does on Windows — "the driver is not loaded" and "your hardware does not
+//! have this" need different actions from the user, and a greyed-out switch
+//! cannot tell them apart.
+//!
+//! The second is that writes go through [`crate::services::privilege`], which
+//! escalates to a helper binary under polkit. A polkit prompt is a blocking
+//! user interaction, so the write runs off the GTK main thread and its result
+//! comes back through a channel — otherwise the window freezes for the duration
+//! of the prompt, which looks exactly like a crash.
 
-use gtk4::prelude::*;
+use std::sync::Arc;
+
+use adw::prelude::*;
 use gtk4::{Align, DropDown, Label, Orientation, Scale, SpinButton, Switch};
 
 use crate::design::card::LltCard;
-use legiontoolkit::capability::{Capability, Kind, Value};
+use legiontoolkit::capability::{Capability, Kind, Limits, Value};
 
 /// A card rendered from one capability. Owns the capability so it can refresh
 /// itself from the backend on demand.
 pub struct FeatureCard {
     card: LltCard,
-    capability: Option<Capability>,
+    capability: Option<Arc<Capability>>,
     value_label: Option<Label>,
     meter: Option<Scale>,
     toggle: Option<Switch>,
     dropdown: Option<(DropDown, Vec<String>)>,
     spin: Option<SpinButton>,
+    /// Shown under the control while a write is running, or when one fails.
+    status: Label,
 }
 
 impl FeatureCard {
@@ -33,14 +43,21 @@ impl FeatureCard {
         let card = LltCard::new();
         card.set_header(&cap.label, cap.note);
 
+        let status = Label::new(None);
+        status.add_css_class("llt-status");
+        status.set_halign(Align::Start);
+        status.set_wrap(true);
+        status.set_visible(false);
+
         let mut this = Self {
             card,
-            capability: None,
             value_label: None,
             meter: None,
             toggle: None,
             dropdown: None,
             spin: None,
+            capability: None,
+            status,
         };
 
         // Unavailable: say why, and stop. We do NOT render a disabled control —
@@ -58,7 +75,8 @@ impl FeatureCard {
             Kind::Custom => this.show_unavailable("Not yet implemented"),
         }
 
-        this.capability = Some(cap);
+        this.capability = Some(Arc::new(cap));
+        this.card.append(&this.status);
         this
     }
 
@@ -117,7 +135,7 @@ impl FeatureCard {
     }
 
     fn build_slider(&mut self, cap: &Capability) {
-        let limits = cap.limits.unwrap_or(legiontoolkit::capability::Limits {
+        let limits = cap.limits.unwrap_or(Limits {
             min: 0.0,
             max: 100.0,
             step: 1.0,
@@ -128,11 +146,90 @@ impl FeatureCard {
         self.spin = Some(spin);
     }
 
+    /// Connect the controls to their capability.
+    ///
+    /// Kept separate from `new` so the card can be built without a parent
+    /// window, which is what the tests and the capability matrix exercise.
+    /// Wire the controls to their capability.
+    ///
+    /// `parent` is taken by value so the confirmation dialog's closure can own
+    /// a reference to the window without a lifetime.
+    pub fn connect_controls(&self, parent: gtk4::Widget) {
+        let cap = match &self.capability {
+            Some(c) if c.can_write() => Arc::clone(c),
+            _ => return,
+        };
+
+        if let Some(sw) = &self.toggle {
+            let active_now = cap.read().map(|v| matches!(v, Value::Bool(true)));
+            let cap = Arc::clone(&cap);
+            let parent = parent.clone();
+            let status = self.status.clone();
+            let card = self.card.clone();
+
+            sw.connect_state_set(move |sw, _| {
+                // `connect_state_set` fires for programmatic changes too, so
+                // compare against what the hardware said before deciding this
+                // was a user action.
+                let current = active_now.as_ref().map(|b| *b).unwrap_or(false);
+                let requested = sw.is_active();
+
+                if requested == current {
+                    return glib::Propagation::Proceed;
+                }
+
+                confirm_and_write(&parent, &card, &status, &cap, Value::Bool(requested));
+                glib::Propagation::Proceed
+            });
+        }
+
+        if let Some((dd, values)) = &self.dropdown {
+            let cap = Arc::clone(&cap);
+            let status = self.status.clone();
+            let parent = parent.clone();
+            let card = self.card.clone();
+            let values = values.clone();
+            let dd_weak = dd.clone();
+
+            dd.connect_selected_notify(move |dd| {
+                let idx = dd.selected() as usize;
+                let Some(value) = values.get(idx).cloned() else {
+                    return;
+                };
+                // Ignore the programmatic selection that `refresh` performs.
+                if let Ok(Value::Text(current)) = cap.read() {
+                    if current == value {
+                        return;
+                    }
+                }
+                confirm_and_write(&parent, &card, &status, &cap, Value::Text(value));
+                let _ = dd_weak.clone();
+            });
+        }
+
+        if let Some(spin) = &self.spin {
+            let cap = Arc::clone(&cap);
+            let status = self.status.clone();
+            let parent = parent.clone();
+            let card = self.card.clone();
+
+            spin.connect_value_changed(move |spin| {
+                let requested = Value::Float(spin.value());
+                if let Ok(current) = cap.read() {
+                    if current == requested {
+                        return;
+                    }
+                }
+                confirm_and_write(&parent, &card, &status, &cap, requested);
+            });
+        }
+    }
+
     /// Re-read the capability and update every widget.
     ///
-    /// A read failure blanks the row rather than removing the card: a file that
-    /// vanished this instant is far more likely to come back than to mean the
-    /// hardware lost the feature.
+    /// A read failure blanks the value rather than removing the card: a file
+    /// that vanished this instant is far more likely to come back than to mean
+    /// the hardware permanently lost the feature.
     pub fn refresh(&self) {
         let cap = match &self.capability {
             Some(c) => c,
@@ -201,4 +298,97 @@ impl FeatureCard {
     pub fn gtk_widget(&self) -> &gtk4::Box {
         self.card.widget()
     }
+}
+
+/// Ask for confirmation when the write warrants it, then run it.
+fn confirm_and_write(
+    parent: &impl gtk4::prelude::IsA<gtk4::Widget>,
+    card: &LltCard,
+    status: &Label,
+    cap: &Arc<Capability>,
+    value: Value,
+) {
+    if !cap.dangerous {
+        submit_write(card, status, cap, value);
+        return;
+    }
+
+    // `MessageDialog` is deprecated in favour of `AdwAlertDialog` from GTK 4.10,
+    // which is also what gets the libadwaita button styling for free.
+    let dialog = adw::AlertDialog::builder()
+        .heading("Hold the fans at maximum?")
+        .body(
+            "A write on the wrong path can leave the fans running at maximum              speed until the machine is rebooted. Recovering without a reboot \
+             means powering off manually.",
+        )
+        .build();
+
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("continue", "Continue");
+    dialog.set_response_appearance("continue", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+
+    let cap = Arc::clone(cap);
+    let card = card.clone();
+    let status = status.clone();
+
+    dialog.choose(
+        Some(parent),
+        None::<&gtk4::gio::Cancellable>,
+        move |response: glib::GString| {
+            if response == "continue" {
+                submit_write(&card, &status, &cap, value.clone());
+            }
+        },
+    );
+}
+
+/// Run a write off the main thread, then report the outcome on the main thread.
+///
+/// glib 0.22 dropped the channel API, and `MainContext::invoke` requires `Send`
+/// — which GTK widgets are not in gtk4 0.11. So the worker hands its result over
+/// a `std::sync::mpsc` channel and a short local timer drains it.
+fn submit_write(card: &LltCard, status: &Label, cap: &Arc<Capability>, value: Value) {
+    status.set_label("Applying…");
+    status.add_css_class("applying");
+    status.set_visible(true);
+    card.set_sensitive(false);
+
+    let cap = Arc::clone(cap);
+    let (sender, receiver) = std::sync::mpsc::channel::<std::result::Result<(), String>>();
+
+    // The write is the slow part — it may block on a polkit prompt — so it must
+    // not run on the thread that owns the window.
+    std::thread::spawn(move || {
+        let outcome = cap.write(value).map_err(|e| e.to_string());
+        let _ = sender.send(outcome);
+    });
+
+    let card = card.clone();
+    let status = status.clone();
+    let receiver = std::rc::Rc::new(std::cell::RefCell::new(receiver));
+
+    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        // `try_recv` only needs an immutable borrow, so a RefCell is enough.
+        let outcome = receiver.borrow().try_recv().ok();
+        match outcome {
+            Some(outcome) => {
+                card.set_sensitive(true);
+                status.remove_css_class("applying");
+                match outcome {
+                    Ok(()) => {
+                        status.set_label("");
+                        status.set_visible(false);
+                    }
+                    Err(message) => {
+                        status.set_label(&message);
+                        status.set_visible(true);
+                    }
+                }
+                glib::ControlFlow::Break
+            }
+            None => glib::ControlFlow::Continue,
+        }
+    });
 }

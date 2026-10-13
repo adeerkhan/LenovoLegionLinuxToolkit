@@ -160,12 +160,17 @@ other people, and would not exist without either of these:
   and the fan-curve capability matrix is what made writing correct code on an
   undocumented machine possible.
 
-- **[Lenovo Legion Toolkit](https://github.com/BartoszCichecki/LenovoLegionToolkit)**
-  by Bartosz Cichecki — the Windows original, and the reference for the
-  feature set, information architecture and visual language this project
-  reproduces on Linux. Its card-based design system and its habit of hiding
-  unsupported controls rather than breaking them are the two ideas borrowed
-  most directly.
+- **[Lenovo Legion Toolkit](https://github.com/LenovoLegionToolkit-Team/LenovoLegionToolkit)** —
+  the Windows original, and the reference for the feature set, information
+  architecture and visual language this project reproduces on Linux. Its
+  card-based design system and its habit of hiding unsupported controls rather
+  than breaking them are the two ideas borrowed most directly.
+
+  It was originally created by
+  [Bartosz Cichecki](https://github.com/BartoszCichecki), whose repository has
+  since been archived, and is now developed by the
+  **LenovoLegionToolkit-Team**. The copy vendored under `Reference/` in this
+  repository is theirs.
 
 Also thanks to legendk95 on Discord for reverse-engineering how to talk to the
 Legion keyboard in the first place, which is what makes the RGB probe useful to

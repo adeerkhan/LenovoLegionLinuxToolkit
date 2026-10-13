@@ -74,6 +74,17 @@ pub const STYLE_CSS: &str = r#"
     font-size: 11px;
     font-style: italic;
 }
+
+/* Inline outcome of a write: grey while applying, red on failure. */
+.llt-status {
+    font-size: 11px;
+    margin-top: 4px;
+    color: @warning_color;
+}
+
+.llt-status.applying {
+    opacity: 0.6;
+}
 "#;
 
 /// Install the stylesheet and follow the system's dark/light preference.

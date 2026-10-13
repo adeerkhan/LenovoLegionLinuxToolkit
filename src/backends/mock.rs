@@ -39,8 +39,10 @@ impl Backend for MockBackend {
             ]
         };
 
-        vec![
-            // ---- Power ----------------------------------------------------
+        let mut caps: Vec<crate::capability::Capability> = Vec::new();
+
+        // ---- Power --------------------------------------------------------
+        caps.push(
             Builder::new("powermode", Kind::Enum, Group::Power)
                 .label("Power Mode")
                 .icon("power-profile-performance-symbolic")
@@ -48,46 +50,60 @@ impl Backend for MockBackend {
                 .read(|| Ok(Value::Text("1".into())))
                 .write(|_| Ok(()))
                 .build(),
-            Builder::new("fan_fullspeed", Kind::Toggle, Group::Power)
-                .label("Maximum Fan Speed")
-                .icon("fan-symbolic")
-                .note("Requires custom power mode on this model")
-                .read(|| Ok(Value::Bool(false)))
-                .write(|_| Ok(()))
-                .build(),
-            // ---- Thermal --------------------------------------------------
-            // Absent on QNCN: access_method_fancurve == NO_ACCESS.
+        );
+
+        // Marked dangerous so the confirmation-dialog path can be exercised
+        // without the hardware that actually requires it.
+        let mut max_fan = Builder::new("fan_fullspeed", Kind::Toggle, Group::Power)
+            .label("Maximum Fan Speed")
+            .icon("fan-symbolic")
+            .note("Requires custom power mode on this model")
+            .read(|| Ok(Value::Bool(false)))
+            .write(|_| Ok(()))
+            .build();
+        max_fan.dangerous = true;
+        caps.push(max_fan);
+
+        // ---- Thermal ------------------------------------------------------
+        // Absent on QNCN: access_method_fancurve == NO_ACCESS.
+        caps.push(
             Builder::new("fancurve", Kind::Custom, Group::Thermal)
                 .label("Fan Curve")
                 .icon("air-conditioner-symbolic")
                 .unavailable("Fan curves are not supported by this model's firmware")
-                .read(|| Ok(Value::Text("—".into())))
+                .read(|| Ok(Value::Text("\u{2014}".into())))
                 .build(),
-            Builder::new("cpu_temp", Kind::ReadOnly, Group::Thermal)
-                .label("CPU Temperature")
-                .icon("cpu-symbolic")
-                .unit("°C")
-                .read(|| Ok(Value::Float(48.0)))
-                .build(),
-            Builder::new("gpu_temp", Kind::ReadOnly, Group::Thermal)
-                .label("GPU Temperature")
-                .icon("video-display-symbolic")
-                .unit("°C")
-                .read(|| Ok(Value::Float(41.0)))
-                .build(),
-            Builder::new("fan1_rpm", Kind::ReadOnly, Group::Thermal)
-                .label("CPU Fan")
-                .icon("fan-symbolic")
-                .unit("rpm")
-                .read(|| Ok(Value::Int(0)))
-                .build(),
-            Builder::new("fan2_rpm", Kind::ReadOnly, Group::Thermal)
-                .label("GPU Fan")
-                .icon("fan-symbolic")
-                .unit("rpm")
-                .read(|| Ok(Value::Int(0)))
-                .build(),
-            // ---- Lighting -------------------------------------------------
+        );
+        for (key, label, icon, value, unit) in [
+            (
+                "cpu_temp",
+                "CPU Temperature",
+                "cpu-symbolic",
+                48.0,
+                "\u{00b0}C",
+            ),
+            (
+                "gpu_temp",
+                "GPU Temperature",
+                "video-display-symbolic",
+                41.0,
+                "\u{00b0}C",
+            ),
+            ("fan1_rpm", "CPU Fan", "fan-symbolic", 0.0, "rpm"),
+            ("fan2_rpm", "GPU Fan", "fan-symbolic", 0.0, "rpm"),
+        ] {
+            caps.push(
+                Builder::new(key, Kind::ReadOnly, Group::Thermal)
+                    .label(label)
+                    .icon(icon)
+                    .unit(unit)
+                    .read(move || Ok(Value::Float(value)))
+                    .build(),
+            );
+        }
+
+        // ---- Lighting -----------------------------------------------------
+        caps.push(
             Builder::new("kbd_backlight", Kind::Enum, Group::Lighting)
                 .label("Keyboard Backlight")
                 .icon("keyboard-brightness-symbolic")
@@ -109,24 +125,33 @@ impl Backend for MockBackend {
                 .read(|| Ok(Value::Text("1".into())))
                 .write(|_| Ok(()))
                 .build(),
+        );
+        caps.push(
             Builder::new("ylogo_light", Kind::Toggle, Group::Lighting)
                 .label("Y-Logo Light")
                 .icon("starred-symbolic")
                 .read(|| Ok(Value::Bool(true)))
                 .write(|_| Ok(()))
                 .build(),
-            // ---- Battery --------------------------------------------------
+        );
+
+        // ---- Battery ------------------------------------------------------
+        caps.push(
             Builder::new("battery_capacity", Kind::ReadOnly, Group::Battery)
                 .label("Battery Level")
                 .icon("battery-symbolic")
                 .unit("%")
                 .read(|| Ok(Value::Float(68.0)))
                 .build(),
+        );
+        caps.push(
             Builder::new("battery_state", Kind::ReadOnly, Group::Battery)
                 .label("Battery Status")
                 .icon("battery-symbolic")
                 .read(|| Ok(Value::Text("Charging".into())))
                 .build(),
+        );
+        caps.push(
             Builder::new("battery_conservation", Kind::Toggle, Group::Battery)
                 .label("Battery Conservation")
                 .icon("battery-symbolic")
@@ -134,32 +159,32 @@ impl Backend for MockBackend {
                 .read(|| Ok(Value::Bool(false)))
                 .write(|_| Ok(()))
                 .build(),
-            // ---- System ---------------------------------------------------
-            Builder::new("fn_lock", Kind::Toggle, Group::System)
-                .label("Fn Lock")
-                .icon("input-keyboard-symbolic")
-                .read(|| Ok(Value::Bool(true)))
-                .write(|_| Ok(()))
-                .build(),
-            Builder::new("touchpad", Kind::Toggle, Group::System)
-                .label("Touchpad")
-                .icon("input-touchpad-symbolic")
-                .read(|| Ok(Value::Bool(true)))
-                .write(|_| Ok(()))
-                .build(),
-            Builder::new("camera_power", Kind::Toggle, Group::System)
-                .label("Camera")
-                .icon("camera-photo-symbolic")
-                .read(|| Ok(Value::Bool(true)))
-                .write(|_| Ok(()))
-                .build(),
-            Builder::new("usb_charging", Kind::Toggle, Group::System)
-                .label("Always-On USB Charging")
-                .icon("usb-symbolic")
-                .read(|| Ok(Value::Bool(false)))
-                .write(|_| Ok(()))
-                .build(),
-            // ---- Power limits: absent on QNCN, kept for the model matrix ----
+        );
+
+        // ---- System -------------------------------------------------------
+        for (key, label, icon, on) in [
+            ("fn_lock", "Fn Lock", "input-keyboard-symbolic", true),
+            ("touchpad", "Touchpad", "input-touchpad-symbolic", true),
+            ("camera_power", "Camera", "camera-photo-symbolic", true),
+            (
+                "usb_charging",
+                "Always-On USB Charging",
+                "usb-symbolic",
+                false,
+            ),
+        ] {
+            caps.push(
+                Builder::new(key, Kind::Toggle, Group::System)
+                    .label(label)
+                    .icon(icon)
+                    .read(move || Ok(Value::Bool(on)))
+                    .write(|_| Ok(()))
+                    .build(),
+            );
+        }
+
+        // ---- Power limits: absent on QNCN, kept for the model matrix -------
+        caps.push(
             Builder::new("cpu_longterm_powerlimit", Kind::Slider, Group::Power)
                 .label("CPU Long-Term Power Limit")
                 .icon("power-profile-performance-symbolic")
@@ -172,6 +197,8 @@ impl Backend for MockBackend {
                 .unavailable("Power limits are not exposed by this model's firmware")
                 .read(|| Ok(Value::Int(0)))
                 .build(),
-        ]
+        );
+
+        caps
     }
 }

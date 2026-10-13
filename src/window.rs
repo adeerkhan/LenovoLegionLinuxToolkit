@@ -124,6 +124,7 @@ impl MainWindow {
                     }
                     let card = FeatureCard::new(cap);
                     page.append(card.gtk_widget());
+                    card.connect_controls(page.clone().upcast::<gtk4::Widget>());
                     cards.borrow_mut().push(card);
                 }
             }
