@@ -16,7 +16,6 @@ use adw::prelude::*;
 use adw::ApplicationWindow;
 use gtk4::{Box as GtkBox, ListBox, Orientation, ScrolledWindow, Stack};
 
-use crate::design::FeatureCard;
 use crate::pages::Pages;
 use legiontoolkit::backends::{Backend, MockBackend, SysfsBackend};
 
@@ -109,10 +108,9 @@ impl MainWindow {
             glib::Propagation::Proceed
         });
 
-        let dashboard_cards: Rc<RefCell<Vec<FeatureCard>>> = Rc::new(RefCell::new(Vec::new()));
-        // Shared: the refresh loop ticks the pages, and the struct needs them
-        // for rebuild-on-refresh and diagnostics. `Pages` is not `Copy`, so the
-        // loop borrows the same handle rather than taking ownership.
+        // Shared: the toolbar's refresh button, the refresh loop and the
+        // struct all tick the same page set. `Pages` is not `Copy`, so they
+        // borrow one handle rather than taking ownership.
         let pages = Rc::new(RefCell::new(Pages::new()));
 
         // ------------------------------------------------------------------
@@ -218,13 +216,11 @@ impl MainWindow {
         theme_toggle.connect_clicked(|_| crate::design::cycle_color_scheme());
         header.pack_end(&theme_toggle);
 
-        let cards_for_refresh = dashboard_cards.clone();
         let refresh = gtk4::Button::from_icon_name("view-refresh-symbolic");
         refresh.set_tooltip_text(Some("Refresh now"));
-        refresh.connect_clicked(move |_| {
-            for card in cards_for_refresh.borrow().iter() {
-                card.refresh();
-            }
+        refresh.connect_clicked({
+            let pages = Rc::clone(&pages);
+            move |_| pages.borrow().refresh()
         });
         header.pack_end(&refresh);
 
@@ -232,12 +228,9 @@ impl MainWindow {
         toolbar.add_top_bar(&header);
         window.set_content(Some(&toolbar));
 
-        // Warm the values before the first paint, pages included. Without this
-        // a page shows dashes until the one-second refresh loop first fires,
-        // which reads as a broken page rather than a pending one.
-        for card in dashboard_cards.borrow().iter() {
-            card.refresh();
-        }
+        // Warm the values before the first paint. Without this a page shows
+        // dashes until the one-second refresh loop first fires, which reads as
+        // a broken page rather than a pending one.
         pages.borrow().refresh();
 
         // ------------------------------------------------------------------
@@ -260,9 +253,6 @@ impl MainWindow {
             }
             seconds_since_refresh.set(0);
 
-            for card in dashboard_cards.borrow().iter() {
-                card.refresh();
-            }
             pages_for_loop.borrow().refresh();
             glib::ControlFlow::Continue
         });

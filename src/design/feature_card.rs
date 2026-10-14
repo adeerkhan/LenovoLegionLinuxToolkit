@@ -58,22 +58,36 @@ impl FeatureCard {
         // unavailable: on an unsupported machine they are the only way to say
         // what the control would do. A *warning* is suppressed there, because
         // warning about a consequence the user cannot cause is noise.
-        let mut status: Vec<Status> = cap
-            .infos
-            .iter()
-            .map(|text| Status {
-                severity: Severity::Info,
-                text,
-            })
-            .collect();
-        if cap.unavailable_reason.is_none() {
+        // `compact_mode` hides the subtitle and the status rows, matching the
+        // reference's compact layout. Read at build time: pages are built once,
+        // so the switch is labelled as taking effect on the next launch rather
+        // than pretending to be live.
+        let compact = legiontoolkit::settings::current().compact_mode;
+
+        let mut status: Vec<Status> = if compact {
+            Vec::new()
+        } else {
+            cap.infos
+                .iter()
+                .map(|text| Status {
+                    severity: Severity::Info,
+                    text,
+                })
+                .collect()
+        };
+        if !compact && cap.unavailable_reason.is_none() {
             status.extend(cap.warnings.iter().map(|text| Status {
                 severity: Severity::Warning,
                 text,
             }));
         }
 
-        card.set_header(cap.icon, &cap.label, cap.note.as_deref(), &status);
+        card.set_header(
+            cap.icon,
+            &cap.label,
+            if compact { None } else { cap.note.as_deref() },
+            &status,
+        );
 
         let mut this = Self {
             card,

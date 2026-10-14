@@ -524,29 +524,6 @@ impl Backend for SysfsBackend {
                 .build(),
         );
 
-        // CPU long-term power limit: absent here, present so the slider exists
-        // for models that do expose it.
-        {
-            let path = self.paths.file("cpu_longterm_powerlimit");
-            let exists = path.as_ref().map(|p| p.exists()).unwrap_or(false);
-            let mut b = Builder::new("cpu_longterm_powerlimit", Kind::Slider, Group::Power)
-                .label("CPU Long-Term Power Limit")
-                .icon("power-profile-performance-symbolic")
-                .unit("W")
-                .limits(Limits {
-                    min: 5.0,
-                    max: 200.0,
-                    step: 1.0,
-                });
-            if exists {
-                let p = path.unwrap();
-                b = b.read(move || Ok(Value::Int(read_trim(&p)?.parse::<i64>().unwrap_or(0))));
-            } else {
-                b = b.unavailable("Power limits are not exposed by this model's firmware");
-            }
-            caps.push(b.build());
-        }
-
         // ---- Lighting -----------------------------------------------------
         {
             // The keyboard backlight is a 3-state leds-class device
@@ -584,6 +561,16 @@ impl Backend for SysfsBackend {
             "ylogo_light",
             "Y-Logo Light",
             "starred-symbolic",
+            Group::Lighting,
+            None,
+        ));
+
+        // The rear IO-port ambient light. `paths.rs` has resolved its leds path
+        // all along; it was simply never exposed as a control.
+        caps.push(self.toggle_cap(
+            "ioport_light",
+            "IO-Port Light",
+            "drive-harddisk-usb-symbolic",
             Group::Lighting,
             None,
         ));

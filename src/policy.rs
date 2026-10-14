@@ -22,6 +22,7 @@ pub const HELPER_WRITABLE: &[&str] = &[
     "touchpad",
     "kbd_backlight",
     "ylogo_light",
+    "ioport_light",
 ];
 
 /// True if the key is one the helper will honour.

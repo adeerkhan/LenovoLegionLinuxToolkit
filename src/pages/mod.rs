@@ -1046,7 +1046,7 @@ fn settings_page(refresh_seconds: Rc<RefCell<u32>>) -> Page {
 
         let (card, compact) = setting_switch(
             "Compact Mode",
-            "Hide card subtitles and status rows.",
+            "Hide card subtitles and status rows. Takes effect on the next launch.",
             current.compact_mode,
         );
         compact.connect_state_set(|_, active| {
