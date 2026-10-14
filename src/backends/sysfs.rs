@@ -558,7 +558,7 @@ impl Backend for SysfsBackend {
             let mut b = Builder::new("kbd_backlight", Kind::Enum, Group::Lighting)
                 .label("Keyboard Backlight")
                 .icon("keyboard-brightness-symbolic")
-                .note("This model exposes a 3-state backlight, not per-key RGB")
+                .note("On / low / high. Colour and effects are handled by keyRGB.")
                 .values(vec![
                     NamedValue {
                         value: "0".into(),

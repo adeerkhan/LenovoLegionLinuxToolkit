@@ -187,7 +187,28 @@ camera and USB charging as "unsupported" on a machine where they work fine.
 - `/sys/module/legion_laptop/parameters/ec_readonly` disables all EC writes
   kernel-wide. The UI must surface this.
 
-## Keyboard RGB — unverified, needs an early probe
+## Keyboard RGB — corrected 2026-10-14: it *is* 24-zone RGB
+
+**This section's earlier conclusion was wrong.** The keyboard is not a 3-state
+white backlight. `048d:c195` is a **Lenovo Legion Gen10 24-zone RGB** keyboard,
+and its colour is driven over **USB**, not the WMI brightness path — the kernel
+module's own source says "RGB keyboard is controlled over USB", and
+[keyRGB](https://github.com/Rainexn0b/keyRGB)'s documentation lists
+`048d:c195` (24-zone) and `048d:c197` (per-key + chassis) explicitly.
+
+The mistake: `platform::kbd_backlight` (`max_brightness = 2`) is only the WMI
+on/off/brightness control that the module exposes, and it was read as "the
+keyboard is 3-state". It is the *brightness* that is 3-state, not the colour.
+
+**What this means for us:** keyRGB already implements the ITE 24-zone
+controller, and two programs writing one keyboard interfere (keyRGB warns about
+this). So this application keeps the WMI on/off/brightness and **delegates
+colour and effects to keyRGB**, offering an *Open keyRGB* action on the Lighting
+page. `src/services/keyrgb.rs` detects the launcher; `system::lenovo_rgb_keyboard`
+detects the device. Reimplementing the 24-zone protocol in Rust is a possible
+later step but is deliberately not attempted while keyRGB exists.
+
+### The earlier (incorrect) probe, kept for the record
 
 `model_qncn` uses `access_method_keyboard = ACCESS_METHOD_WMI`, and the kernel
 module exposes this as an `leds` class device with `max_brightness = 2` — i.e. a

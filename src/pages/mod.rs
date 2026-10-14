@@ -421,7 +421,12 @@ impl Pages {
                     page.heading("Lighting");
                 },
                 Rc::clone(&caps),
-            ),
+            )
+            .with_extra(|page, _caps| {
+                if let Some(card) = rgb_section() {
+                    page.append(card.widget());
+                }
+            }),
             system: CapabilityPage::new(
                 |page| {
                     page.heading("System");
@@ -1275,6 +1280,53 @@ fn settings_page(refresh_seconds: Rc<RefCell<u32>>) -> Page {
             .widget(),
         );
     })
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard RGB — delegated to keyRGB
+// ---------------------------------------------------------------------------
+
+/// A card explaining that the RGB keyboard is driven by keyRGB, with a button to
+/// launch it. `None` when this machine has no such keyboard.
+///
+/// This application deliberately does not reimplement the RGB controller: two
+/// programs writing the same keyboard interfere, which keyRGB documents.
+fn rgb_section() -> Option<LltCard> {
+    let model = system::lenovo_rgb_keyboard()?;
+    let installed = legiontoolkit::services::keyrgb::is_installed();
+
+    let card = LltCard::new();
+    card.set_header(
+        "keyboard-brightness-symbolic",
+        "Keyboard RGB",
+        Some(&format!(
+            "This keyboard is {model} RGB. Colour and effects are driven over USB by \
+             keyRGB; this application controls on/off and brightness."
+        )),
+        &[],
+    );
+
+    if installed {
+        let open = gtk4::Button::with_label("Open keyRGB");
+        open.add_css_class("suggested-action");
+        open.set_valign(Align::Center);
+        open.connect_clicked(|_| {
+            if let Err(e) = legiontoolkit::services::keyrgb::launch() {
+                tracing::warn!("could not launch keyRGB: {e}");
+            }
+        });
+        card.set_accessory(&open);
+    } else {
+        let note = Label::new(Some(
+            "Install keyRGB to control the colour: https://github.com/Rainexn0b/keyRGB",
+        ));
+        note.add_css_class("llt-card-note");
+        note.set_halign(Align::Start);
+        note.set_wrap(true);
+        card.append(&note);
+    }
+
+    Some(card)
 }
 
 // ---------------------------------------------------------------------------

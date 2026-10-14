@@ -266,6 +266,33 @@ pub fn cpu_power_w() -> Option<f64> {
     watts
 }
 
+/// The USB product id of a Lenovo ITE RGB keyboard, if one is attached.
+///
+/// Legion Gen10 keyboards are 24-zone (`c195`) or per-key + chassis (`c197`).
+/// The colour is a USB concern — keyRGB drives it — not the WMI brightness
+/// path this backend otherwise uses.
+pub fn lenovo_rgb_keyboard() -> Option<&'static str> {
+    let entries = std::fs::read_dir("/sys/bus/usb/devices").ok()?;
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        let read = |field: &str| {
+            std::fs::read_to_string(dir.join(field))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_default()
+        };
+        if read("idVendor") != "048d" {
+            continue;
+        }
+        match read("idProduct").as_str() {
+            "c195" => return Some("24-zone"),
+            "c197" => return Some("per-key"),
+            "c193" => return Some("24-zone + chassis"),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// The battery's `status` string.
 fn battery_status() -> Option<String> {
     let dir = crate::paths::battery_dir()?;
