@@ -21,7 +21,7 @@ use legiontoolkit::backends::{Backend, MockBackend, SysfsBackend};
 
 /// Sidebar entries, in the order the reference uses. The dashboard is always
 /// first; the rest are one per capability group, plus About.
-const NAV: [(&str, &str, &str); 8] = [
+const NAV: [(&str, &str, &str); 9] = [
     ("go-home-symbolic", "Home", "home"),
     ("power-profile-performance-symbolic", "Power", "power"),
     (
@@ -32,6 +32,7 @@ const NAV: [(&str, &str, &str); 8] = [
     ("keyboard-brightness-symbolic", "Lighting", "lighting"),
     ("battery-symbolic", "Battery", "battery"),
     ("emblem-system-symbolic", "System", "system"),
+    ("system-run-symbolic", "Automation", "automation"),
     ("preferences-system-symbolic", "Settings", "settings"),
     ("help-about-symbolic", "About", "about"),
 ];
@@ -254,6 +255,7 @@ impl MainWindow {
             seconds_since_refresh.set(0);
 
             pages_for_loop.borrow().refresh();
+            pages_for_loop.borrow().automation_tick();
             glib::ControlFlow::Continue
         });
 

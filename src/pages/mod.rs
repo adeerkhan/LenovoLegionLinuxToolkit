@@ -20,6 +20,7 @@ use std::sync::Arc;
 use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, FlowBox, Label, Orientation, ScrolledWindow};
 
+use legiontoolkit::automation::{AutomationStore, Engine, Environment, Pipeline, Step, Trigger};
 use legiontoolkit::backends::{driver_status, Backend};
 use legiontoolkit::capability::{Capability, Value};
 use legiontoolkit::paths;
@@ -268,6 +269,7 @@ pub struct Pages {
     pub system: CapabilityPage,
     pub about: Page,
     pub settings: Page,
+    pub automation: Page,
     /// The refresh interval in seconds, shared with the Settings control so a
     /// change takes effect without a restart.
     pub refresh_seconds: Rc<RefCell<u32>>,
@@ -276,6 +278,9 @@ pub struct Pages {
     /// grid. `Capability` is deliberately not cloneable — it owns its read and
     /// write closures — so pages share it through this rather than copying it.
     caps: Rc<RefCell<Vec<Arc<Capability>>>>,
+    /// The automation store and engine, shared with the Automation page and
+    /// driven from the window's tick.
+    automation_runtime: Rc<RefCell<AutomationState>>,
 }
 
 impl Pages {
@@ -333,10 +338,12 @@ impl Pages {
             // Built once, in `rebuild`, like every other page. Constructing it
             // here as well built and discarded a full widget tree.
             settings: Page::empty(),
+            automation: Page::empty(),
             refresh_seconds: Rc::new(RefCell::new(
                 legiontoolkit::settings::current().refresh_interval_secs,
             )),
             caps,
+            automation_runtime: Rc::new(RefCell::new(AutomationState::new())),
         }
     }
 
@@ -344,6 +351,8 @@ impl Pages {
     pub fn rebuild(&mut self, backend: &dyn Backend) {
         *self.caps.borrow_mut() = backend.capabilities().into_iter().map(Arc::new).collect();
         self.settings = settings_page(Rc::clone(&self.refresh_seconds));
+        self.automation =
+            automation_page(Rc::clone(&self.automation_runtime), Rc::clone(&self.caps));
         self.battery.rebuild(backend);
 
         // The landing page shows every group, sensors first.
@@ -393,6 +402,48 @@ impl Pages {
         }
     }
 
+    /// Evaluate the automation engine and run any pipelines that fired.
+    ///
+    /// Called from the window's one-second tick. The engine is edge-triggered,
+    /// so a pipeline on "AC connected" runs once per plug-in rather than every
+    /// second; a periodic one runs on its own interval.
+    pub fn automation_tick(&self) {
+        let env = {
+            let caps = self.caps.borrow();
+            let power_mode = caps
+                .iter()
+                .find(|c| c.key == "powermode")
+                .and_then(|c| c.read().ok())
+                .and_then(|v| match v {
+                    Value::Text(text) => Some(text),
+                    _ => None,
+                });
+            Environment {
+                // Default to on-AC when there is no mains supply to read, so an
+                // AC-triggered pipeline is not fired by a missing reading.
+                on_ac: system::on_ac_power().unwrap_or(true),
+                power_mode,
+            }
+        };
+
+        let pipelines: Vec<Pipeline> = {
+            let mut runtime = self.automation_runtime.borrow_mut();
+            let now = runtime.started.elapsed().as_secs();
+            // Bind the state once: borrowing `engine` and `store` through the
+            // `RefMut` separately would conflict, but they are disjoint fields.
+            let state = &mut *runtime;
+            let indices = state.engine.evaluate(&env, now, &state.store);
+            indices
+                .iter()
+                .filter_map(|i| state.store.pipelines.get(*i).cloned())
+                .collect()
+        };
+
+        for pipeline in pipelines {
+            apply_pipeline(&pipeline, &self.caps);
+        }
+    }
+
     pub fn stack_pages(&self) -> Vec<(&'static str, &ScrolledWindow, &'static str)> {
         vec![
             ("home", self.home.widget(), "Home"),
@@ -401,6 +452,7 @@ impl Pages {
             ("lighting", self.lighting.widget(), "Lighting"),
             ("battery", self.battery.widget(), "Battery"),
             ("system", self.system.widget(), "System"),
+            ("automation", self.automation.widget(), "Automation"),
             ("settings", self.settings.widget(), "Settings"),
             ("about", self.about.widget(), "About"),
         ]
@@ -1099,6 +1151,324 @@ fn settings_page(refresh_seconds: Rc<RefCell<u32>>) -> Page {
 }
 
 // ---------------------------------------------------------------------------
+// Automation — triggers and capability-derived steps
+// ---------------------------------------------------------------------------
+
+/// The automation store and its edge-detection state, shared by the page and
+/// the window's tick.
+pub struct AutomationState {
+    store: AutomationStore,
+    engine: Engine,
+    started: std::time::Instant,
+}
+
+impl AutomationState {
+    fn new() -> Self {
+        Self {
+            store: AutomationStore::load(),
+            engine: Engine::new(),
+            started: std::time::Instant::now(),
+        }
+    }
+}
+
+/// The live view of the pipeline list, so a mutation can redraw it.
+struct AutomationView {
+    runtime: Rc<RefCell<AutomationState>>,
+    caps: Rc<RefCell<Vec<Arc<Capability>>>>,
+    list: GtkBox,
+}
+
+impl AutomationView {
+    fn rebuild(self: &Rc<Self>) {
+        while let Some(child) = self.list.first_child() {
+            self.list.remove(&child);
+        }
+        let pipelines = self.runtime.borrow().store.pipelines.clone();
+        if pipelines.is_empty() {
+            let empty = Label::new(Some("No pipelines yet. Add one below."));
+            empty.add_css_class("llt-page-footnote");
+            empty.set_halign(Align::Start);
+            self.list.append(&empty);
+            return;
+        }
+        for pipeline in &pipelines {
+            self.list
+                .append(Self::pipeline_card(self, pipeline).widget());
+        }
+    }
+
+    fn pipeline_card(view: &Rc<Self>, pipeline: &Pipeline) -> LltCard {
+        let card = LltCard::new();
+        card.set_header(
+            "preferences-system-symbolic",
+            &pipeline.name,
+            Some(&pipeline.trigger.describe()),
+            &[],
+        );
+
+        let enabled = gtk4::Switch::new();
+        enabled.set_active(pipeline.enabled);
+        enabled.set_valign(Align::Center);
+        card.set_accessory(&enabled);
+
+        let steps_label = Label::new(Some(&pipeline.summary()));
+        steps_label.add_css_class("llt-card-note");
+        steps_label.set_halign(Align::Start);
+        steps_label.set_wrap(true);
+        card.append(&steps_label);
+
+        let capture = gtk4::Button::with_label("Capture current");
+        capture.set_tooltip_text(Some(
+            "Record the current value of every writable setting as this pipeline's steps",
+        ));
+        let run = gtk4::Button::with_label("Run now");
+        let delete = gtk4::Button::with_label("Delete");
+        delete.add_css_class("destructive-action");
+        let actions = GtkBox::new(Orientation::Horizontal, 8);
+        actions.append(&capture);
+        actions.append(&run);
+        actions.append(&delete);
+        card.append(&actions);
+
+        let status = Label::new(None);
+        status.add_css_class("llt-card-note");
+        status.set_halign(Align::Start);
+        status.set_wrap(true);
+        card.append(&status);
+
+        let name = pipeline.name.clone();
+
+        enabled.connect_state_set({
+            let view = Rc::clone(view);
+            let name = name.clone();
+            move |_, active| {
+                let mut runtime = view.runtime.borrow_mut();
+                if let Some(p) = runtime.store.pipelines.iter_mut().find(|p| p.name == name) {
+                    p.enabled = active;
+                }
+                let _ = runtime.store.save();
+                glib::Propagation::Proceed
+            }
+        });
+
+        run.connect_clicked({
+            let view = Rc::clone(view);
+            let name = name.clone();
+            let status = status.clone();
+            move |_| {
+                let pipeline = view
+                    .runtime
+                    .borrow()
+                    .store
+                    .pipelines
+                    .iter()
+                    .find(|p| p.name == name)
+                    .cloned();
+                match pipeline {
+                    Some(p) if !p.steps.is_empty() => {
+                        apply_pipeline(&p, &view.caps);
+                        status.set_label("Applied.");
+                    }
+                    Some(_) => status.set_label("This pipeline has no steps yet."),
+                    None => {}
+                }
+            }
+        });
+
+        capture.connect_clicked({
+            let view = Rc::clone(view);
+            let name = name.clone();
+            let status = status.clone();
+            let steps_label = steps_label.clone();
+            move |_| {
+                let caps = view.caps.borrow();
+                let steps: Vec<Step> = caps
+                    .iter()
+                    .filter(|c| c.can_write() && c.is_available())
+                    .filter_map(|c| {
+                        let value = c.read().ok()?;
+                        Some(Step {
+                            key: c.key.clone(),
+                            value: display_value(&value),
+                        })
+                    })
+                    .collect();
+                drop(caps);
+
+                let mut runtime = view.runtime.borrow_mut();
+                if let Some(p) = runtime.store.pipelines.iter_mut().find(|p| p.name == name) {
+                    p.steps = steps;
+                    steps_label.set_label(&p.summary());
+                }
+                let _ = runtime.store.save();
+                status.set_label("Captured current settings.");
+            }
+        });
+
+        delete.connect_clicked({
+            let view = Rc::clone(view);
+            let name = name.clone();
+            move |_| {
+                view.runtime.borrow_mut().store.remove(&name);
+                let _ = view.runtime.borrow().store.save();
+                view.rebuild();
+            }
+        });
+
+        card
+    }
+}
+
+/// The trigger dropdown's entries: the fixed triggers, then one per power mode
+/// the machine actually offers.
+fn trigger_choices(caps: &[Arc<Capability>]) -> Vec<(String, String)> {
+    let mut choices = vec![
+        (
+            "ac".to_string(),
+            "When the AC adapter is connected".to_string(),
+        ),
+        ("battery".to_string(), "When running on battery".to_string()),
+        ("interval:300".to_string(), "Every 5 minutes".to_string()),
+        ("interval:900".to_string(), "Every 15 minutes".to_string()),
+        ("interval:1800".to_string(), "Every 30 minutes".to_string()),
+    ];
+    if let Some(mode) = caps.iter().find(|c| c.key == "powermode") {
+        for value in &mode.values {
+            choices.push((
+                format!("powermode:{}", value.value),
+                format!("When power mode becomes {}", value.label),
+            ));
+        }
+    }
+    choices
+}
+
+/// The card that creates a new pipeline.
+fn new_pipeline_card(view: Rc<AutomationView>) -> LltCard {
+    let card = LltCard::new();
+    card.set_header(
+        "preferences-system-symbolic",
+        "New pipeline",
+        Some("Name it, choose when it runs, then Capture current on the card it creates."),
+        &[],
+    );
+
+    let name = gtk4::Entry::new();
+    name.set_placeholder_text(Some("Pipeline name"));
+    name.set_valign(Align::Center);
+    name.set_hexpand(true);
+
+    let choices = trigger_choices(&view.caps.borrow());
+    let ids: Vec<String> = choices.iter().map(|(id, _)| id.clone()).collect();
+    let labels: Vec<&str> = choices.iter().map(|(_, label)| label.as_str()).collect();
+    let dropdown = gtk4::DropDown::from_strings(&labels);
+    dropdown.set_valign(Align::Center);
+
+    let add = gtk4::Button::with_label("Add");
+    add.add_css_class("suggested-action");
+
+    let row = GtkBox::new(Orientation::Horizontal, 8);
+    row.append(&name);
+    row.append(&dropdown);
+    row.append(&add);
+    card.append(&row);
+
+    let status = Label::new(None);
+    status.add_css_class("llt-card-note");
+    status.set_halign(Align::Start);
+    status.set_wrap(true);
+    card.append(&status);
+
+    add.connect_clicked({
+        let view = Rc::clone(&view);
+        let name_entry = name.clone();
+        move |_| {
+            let pipeline_name = name_entry.text().trim().to_string();
+            if pipeline_name.is_empty() {
+                status.set_label("Give the pipeline a name.");
+                return;
+            }
+            let Some(id) = ids.get(dropdown.selected() as usize) else {
+                return;
+            };
+            let Some(trigger) = Trigger::from_id(id) else {
+                return;
+            };
+            let mut runtime = view.runtime.borrow_mut();
+            runtime.store.upsert(Pipeline::new(pipeline_name, trigger));
+            let _ = runtime.store.save();
+            drop(runtime);
+            name_entry.set_text("");
+            status.set_label("");
+            view.rebuild();
+        }
+    });
+
+    card
+}
+
+fn automation_page(
+    runtime: Rc<RefCell<AutomationState>>,
+    caps: Rc<RefCell<Vec<Arc<Capability>>>>,
+) -> Page {
+    Page::new(move |page| {
+        page.heading("Automation");
+
+        let intro = Label::new(Some(
+            "A pipeline runs a set of settings when its trigger fires. Every step is a \
+             capability write, through the same privileged path as the dashboard controls, \
+             and only capabilities this machine can write are offered.",
+        ));
+        intro.add_css_class("llt-card-note");
+        intro.set_halign(Align::Start);
+        intro.set_wrap(true);
+        intro.set_margin_bottom(8);
+        page.append(&intro);
+
+        let list = GtkBox::new(Orientation::Vertical, 0);
+        page.append(&list);
+
+        let view = Rc::new(AutomationView {
+            runtime: Rc::clone(&runtime),
+            caps: Rc::clone(&caps),
+            list,
+        });
+        view.rebuild();
+
+        page.append(new_pipeline_card(Rc::clone(&view)).widget());
+    })
+}
+
+/// Run a pipeline's steps on a worker thread.
+///
+/// Off the main thread because a first write may raise a polkit prompt, which
+/// is a blocking interaction; running it inline would freeze the window. The
+/// capability handles are `Arc`s, so the worker owns what it needs and the
+/// result is reported through the log rather than a widget.
+fn apply_pipeline(pipeline: &Pipeline, caps: &Rc<RefCell<Vec<Arc<Capability>>>>) {
+    let snapshot: Vec<Arc<Capability>> = caps.borrow().clone();
+    let steps = pipeline.steps.clone();
+    let name = pipeline.name.clone();
+
+    std::thread::spawn(move || {
+        for step in &steps {
+            let Some(cap) = snapshot.iter().find(|c| c.key == step.key) else {
+                continue;
+            };
+            if !cap.can_write() || !cap.is_available() {
+                continue;
+            }
+            let value = legiontoolkit::capability::parse_stored(cap.kind, &step.value);
+            match cap.write(value) {
+                Ok(()) => tracing::info!("automation \"{name}\": {} = {}", step.key, step.value),
+                Err(e) => tracing::warn!("automation \"{name}\": {} failed: {e}", step.key),
+            }
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Custom mode — named presets of power settings
 // ---------------------------------------------------------------------------
 
@@ -1268,13 +1638,16 @@ fn apply_preset(
     let mut skipped = 0;
     for (key, value) in &preset.values {
         match capabilities.iter().find(|c| c.key == *key) {
-            Some(cap) if cap.can_write() => match cap.write(Value::Text(value.clone())) {
-                Ok(()) => written += 1,
-                Err(e) => {
-                    card.set_outcome(Severity::Error, &format!("{key}: {e}"));
-                    return;
+            Some(cap) if cap.can_write() => {
+                let parsed = legiontoolkit::capability::parse_stored(cap.kind, value);
+                match cap.write(parsed) {
+                    Ok(()) => written += 1,
+                    Err(e) => {
+                        card.set_outcome(Severity::Error, &format!("{key}: {e}"));
+                        return;
+                    }
                 }
-            },
+            }
             // A preset may name settings this machine does not have. That is
             // not an error — the same preset is meant to work elsewhere.
             _ => skipped += 1,

@@ -211,6 +211,26 @@ static DISCHARGE_RANGE: Mutex<(Option<f64>, Option<f64>)> = Mutex::new((None, No
 /// When the current discharge began, if the machine is discharging.
 static ON_BATTERY_SINCE: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
+/// Whether the machine is on AC power.
+///
+/// Reads the `online` attribute of any `Mains` supply in the power_supply
+/// class, so it does not depend on the adapter being named `ADP0`. `None` when
+/// the machine exposes no mains supply at all.
+pub fn on_ac_power() -> Option<bool> {
+    let entries = std::fs::read_dir("/sys/class/power_supply").ok()?;
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        let kind = std::fs::read_to_string(dir.join("type")).unwrap_or_default();
+        if kind.trim() != "Mains" {
+            continue;
+        }
+        if let Ok(online) = std::fs::read_to_string(dir.join("online")) {
+            return Some(online.trim() == "1");
+        }
+    }
+    None
+}
+
 /// The battery's `status` string.
 fn battery_status() -> Option<String> {
     let dir = crate::paths::battery_dir()?;
@@ -650,6 +670,18 @@ mod tests {
         assert_eq!(format_duration(40), "40s");
         assert_eq!(format_duration(605), "10m");
         assert_eq!(format_duration(3900), "1h 05m");
+    }
+
+    /// The automation engine keys off `on_ac_power`, so it must agree with the
+    /// adapter file the rest of the system reads.
+    #[test]
+    fn on_ac_power_matches_the_adapter_file() {
+        let Some(on_ac) = on_ac_power() else {
+            return;
+        };
+        if let Ok(raw) = std::fs::read_to_string("/sys/class/power_supply/ADP0/online") {
+            assert_eq!(on_ac, raw.trim() == "1");
+        }
     }
 
     /// The metadata a slider needs must be self-consistent, and an attribute

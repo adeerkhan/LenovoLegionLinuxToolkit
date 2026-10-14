@@ -7,6 +7,7 @@
 //! The security boundary is [`policy`]: it is the single allowlist of
 //! capability keys the helper will write.
 
+pub mod automation;
 pub mod backends;
 pub mod capability;
 pub mod icons;

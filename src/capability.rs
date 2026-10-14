@@ -75,6 +75,25 @@ pub fn read_trim(path: &std::path::PathBuf) -> anyhow::Result<String> {
     Ok(std::fs::read_to_string(path)?.trim().to_string())
 }
 
+/// Rebuild a [`Value`] of the right shape from a stored string.
+///
+/// A preset or an automation step stores every value as text. Writing a
+/// toggle's `"1"` back as `Value::Text("1")` does not match the
+/// `Value::Bool(true)` its write closure tests for, so the string is
+/// interpreted by the capability's own [`Kind`] — the only place that knows
+/// what shape the value takes.
+pub fn parse_stored(kind: Kind, stored: &str) -> Value {
+    let trimmed = stored.trim();
+    match kind {
+        Kind::Toggle => Value::Bool(matches!(trimmed, "1" | "true" | "on" | "yes")),
+        Kind::Slider => trimmed
+            .parse::<f64>()
+            .map(Value::Float)
+            .unwrap_or_else(|_| Value::Text(stored.to_string())),
+        _ => Value::Text(stored.to_string()),
+    }
+}
+
 /// The value read from or written to a capability.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value {
@@ -303,5 +322,34 @@ impl Builder {
                 .unwrap_or_else(|| Box::new(|| Ok(Value::Text("—".into())))),
             write: self.write,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A toggle stored as `"1"` must come back as `Bool(true)`: its write
+    /// closure treats only `Bool(true)` as on, so a plain `Text("1")` would
+    /// write `0` and silently turn the setting off.
+    #[test]
+    fn stored_values_recover_their_kind() {
+        assert_eq!(parse_stored(Kind::Toggle, "1"), Value::Bool(true));
+        assert_eq!(parse_stored(Kind::Toggle, "true"), Value::Bool(true));
+        assert_eq!(parse_stored(Kind::Toggle, "0"), Value::Bool(false));
+        assert_eq!(parse_stored(Kind::Slider, "70"), Value::Float(70.0));
+        assert_eq!(
+            parse_stored(Kind::Enum, "performance"),
+            Value::Text("performance".into())
+        );
+    }
+
+    /// A slider value that is not a number must not silently become zero.
+    #[test]
+    fn a_nonsense_slider_value_is_kept_as_text() {
+        assert_eq!(
+            parse_stored(Kind::Slider, "high"),
+            Value::Text("high".into())
+        );
     }
 }
