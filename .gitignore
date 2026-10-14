@@ -89,12 +89,6 @@ obj/x86/
 [Aa][Rr][Mm]64[Ee][Cc]/
 bld/
 [Bb]in/
-# ...but the .NET ignore list above matches *any* `bin/` directory, including our
-# own Rust sources. Without these negations `src/bin/` was ignored, so the
-# privileged helper and the keyboard probe were never committed and a fresh
-# clone could not build.
-!src/bin/
-!src/bin/**
 [Oo]bj/
 [Oo]ut/
 [Ll]og/
@@ -516,3 +510,11 @@ ability to depend on floating library versions.
 
 # CodeGraph index
 /.codegraph
+
+
+# The .NET ignore rules above match any `bin/` directory, including our own
+# Rust sources. Without this negation `src/bin/` was ignored, so the privileged
+# helper and the keyboard probe were never committed and a fresh clone could
+# not build.
+!src/bin/
+!src/bin/**
