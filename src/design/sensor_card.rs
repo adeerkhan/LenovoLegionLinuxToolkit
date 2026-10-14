@@ -167,4 +167,22 @@ impl SensorCard {
     pub fn widget(&self) -> &GtkBox {
         &self.root
     }
+
+    /// A horizontal rule between two groups of rows in one card, so a combined
+    /// card (Motherboard + Battery) reads as two sections.
+    pub fn divider(&self) {
+        let sep = gtk4::Separator::new(Orientation::Horizontal);
+        sep.set_margin_top(4);
+        sep.set_margin_bottom(4);
+        self.root.append(&sep);
+    }
+
+    /// A small heading for the second group in a combined card.
+    pub fn subheading(&self, text: &str) {
+        let label = Label::new(Some(text));
+        label.add_css_class("llt-sensor-title");
+        label.set_halign(Align::Start);
+        label.set_margin_top(2);
+        self.root.append(&label);
+    }
 }

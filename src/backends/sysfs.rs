@@ -456,6 +456,18 @@ impl Backend for SysfsBackend {
                 .read(|| Ok(Value::Float(system::cpu_percent().unwrap_or(0.0))))
                 .build(),
         );
+        // CPU package power, from RAPL. Absent where the counter is root-only,
+        // which is the honest outcome rather than a fixed zero.
+        if system::cpu_power_available() {
+            caps.push(
+                Builder::new("cpu_power", Kind::ReadOnly, Group::Processors)
+                    .label("CPU Package Power")
+                    .icon("org.gnome.Settings-device-diagnostics-symbolic")
+                    .unit("W")
+                    .read(|| Ok(Value::Float(system::cpu_power_w().unwrap_or(0.0))))
+                    .build(),
+            );
+        }
         if system::cpu_clock_mhz().is_some() {
             caps.push(
                 Builder::new("cpu_clock", Kind::ReadOnly, Group::Processors)

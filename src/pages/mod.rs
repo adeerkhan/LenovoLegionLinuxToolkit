@@ -490,20 +490,15 @@ struct ThermalCards {
     gpu_rows: Vec<(usize, &'static str)>,
     board: Rc<SensorCard>,
     board_rows: Vec<(usize, &'static str)>,
-    memory: Rc<SensorCard>,
-    memory_rows: Vec<(usize, &'static str)>,
-    disk: Rc<SensorCard>,
-    disk_rows: Vec<(usize, &'static str)>,
-    battery: Rc<SensorCard>,
-    battery_rows: Vec<(usize, &'static str)>,
+    storage: Rc<SensorCard>,
+    storage_rows: Vec<(usize, &'static str)>,
 }
 
 /// Append the sensor grid to a page and register its cards for refreshing.
 ///
-/// Every row starts blank and is filled from whichever source actually has the
-/// reading, exactly as the reference's sensor controller hides cards for
-/// sensors a machine does not have. Reusable because the reference puts this
-/// grid at the top of its landing page, and so do we.
+/// Four cards, as the reference lays them out: CPU, GPU, Motherboard + Battery
+/// (one card, two sections) and Memory + Disk. Every row starts blank and is
+/// filled from whichever source has the reading.
 fn append_sensor_grid(page: &mut Page, out: &ThermalGrid) {
     let out = Rc::clone(out);
     {
@@ -515,8 +510,6 @@ fn append_sensor_grid(page: &mut Page, out: &ThermalGrid) {
         grid.set_homogeneous(true);
         grid.set_valign(gtk4::Align::Start);
 
-        // The reference's CPU card leads with utilization and clock, and both
-        // of those work with no Legion driver loaded.
         let mut cpu = SensorCard::new("CPU");
         let cpu_rows = vec![
             (cpu.add_row("Utilization", "%", 0, 100.0), "cpu_utilization"),
@@ -535,10 +528,10 @@ fn append_sensor_grid(page: &mut Page, out: &ThermalGrid) {
                 cpu.add_row("Temperature", "\u{00b0}C", 0, 110.0),
                 "cpu_temp",
             ),
+            // Blank where the RAPL counter is root-only.
+            (cpu.add_row("Power", "W", 1, 60.0), "cpu_power"),
         ];
 
-        // The reference's GPU card carries utilization, VRAM, clock, fan and
-        // temperature. Ours fills the same shape from nvidia-smi.
         let mut gpu = SensorCard::new("GPU");
         // The model goes on the card once, not on every row.
         if let Some(reading) = system::gpu() {
@@ -551,15 +544,14 @@ fn append_sensor_grid(page: &mut Page, out: &ThermalGrid) {
                 "gpu_temp",
             ),
             (gpu.add_row("Core Clock", "MHz", 0, 3000.0), "gpu_clock"),
-            (gpu.add_row("Power", "W", 0, 175.0), "gpu_power"),
+            (gpu.add_row("Power", "W", 1, 175.0), "gpu_power"),
             (gpu.add_row("Memory", "MiB", 0, 8192.0), "gpu_memory"),
         ];
 
-        // The reference's motherboard card carries the fans and the chipset
-        // (PCH) temperature; on Linux both come from the legion module once it
-        // is loaded, and the rows stay blank until then.
+        // Motherboard and Battery share a card, separated by a rule, so the
+        // sensor row stays four cards on a wide window.
         let mut board = SensorCard::new("Motherboard");
-        let board_rows = vec![
+        let mut board_rows = vec![
             (board.add_row("CPU Fan", "rpm", 0, 6000.0), "fan1_rpm"),
             (board.add_row("GPU Fan", "rpm", 0, 6000.0), "fan2_rpm"),
             (
@@ -567,30 +559,26 @@ fn append_sensor_grid(page: &mut Page, out: &ThermalGrid) {
                 "ic_temp",
             ),
         ];
+        board.divider();
+        board.subheading("Battery");
+        board_rows.push((board.add_row("State", "", 0, 100.0), "battery_state"));
+        board_rows.push((board.add_row("Level", "%", 0, 100.0), "battery_capacity"));
 
-        let mut memory = SensorCard::new("Memory");
-        let memory_rows = vec![
+        let mut storage = SensorCard::new("Memory");
+        let mut storage_rows = vec![
             (
-                memory.add_row("Utilization", "%", 0, 100.0),
+                storage.add_row("Utilization", "%", 0, 100.0),
                 "memory_utilization",
             ),
-            (memory.add_row("Swap", "%", 0, 100.0), "swap_utilization"),
+            (storage.add_row("Swap", "%", 0, 100.0), "swap_utilization"),
         ];
-
-        let mut disk = SensorCard::new("Disk");
-        let disk_rows = vec![
-            (disk.add_row("Usage", "%", 0, 100.0), "disk_usage"),
-            (
-                disk.add_row("Temperature", "\u{00b0}C", 0, 90.0),
-                "disk_temp",
-            ),
-        ];
-
-        let mut battery = SensorCard::new("Battery");
-        let battery_rows = vec![
-            (battery.add_row("State", "", 0, 100.0), "battery_state"),
-            (battery.add_row("Level", "%", 0, 100.0), "battery_capacity"),
-        ];
+        storage.divider();
+        storage.subheading("Disk");
+        storage_rows.push((storage.add_row("Usage", "%", 0, 100.0), "disk_usage"));
+        storage_rows.push((
+            storage.add_row("Temperature", "\u{00b0}C", 0, 90.0),
+            "disk_temp",
+        ));
 
         let cards = Rc::new(ThermalCards {
             cpu: Rc::new(cpu),
@@ -599,22 +587,11 @@ fn append_sensor_grid(page: &mut Page, out: &ThermalGrid) {
             gpu_rows,
             board: Rc::new(board),
             board_rows,
-            memory: Rc::new(memory),
-            memory_rows,
-            disk: Rc::new(disk),
-            disk_rows,
-            battery: Rc::new(battery),
-            battery_rows,
+            storage: Rc::new(storage),
+            storage_rows,
         });
 
-        for card in [
-            &cards.cpu,
-            &cards.gpu,
-            &cards.board,
-            &cards.memory,
-            &cards.disk,
-            &cards.battery,
-        ] {
+        for card in [&cards.cpu, &cards.gpu, &cards.board, &cards.storage] {
             grid.insert(card.widget().upcast_ref::<gtk4::Widget>(), -1);
         }
 
@@ -664,14 +641,21 @@ fn refresh_thermal(
         cards.gpu.set_value(*row, value(key));
     }
     for (row, key) in cards.board_rows.iter() {
+        // "Charging" is a word, not a number, so it goes through the text path.
+        if *key == "battery_state" {
+            if let Some(state) = text(key) {
+                cards.board.set_text(*row, 0.0, &state);
+            }
+            continue;
+        }
         cards.board.set_value(*row, value(key));
     }
     // The reference's RAM card reads "Utilization  10.8/15.7 GB": the absolute
     // in the label, the percentage in the meter.
-    for (row, key) in cards.memory_rows.iter() {
+    for (row, key) in cards.storage_rows.iter() {
         if *key == "memory_utilization" {
             if let Some(m) = system::memory() {
-                cards.memory.set_text(
+                cards.storage.set_text(
                     *row,
                     m.percent / 100.0,
                     &format!("{:.1} / {:.1} GB", m.used_gib, m.total_gib),
@@ -679,20 +663,7 @@ fn refresh_thermal(
                 continue;
             }
         }
-        cards.memory.set_value(*row, value(key));
-    }
-    for (row, key) in cards.disk_rows.iter() {
-        cards.disk.set_value(*row, value(key));
-    }
-    for (row, key) in cards.battery_rows.iter() {
-        // "Charging" is a word, not a number, so it goes through the text path.
-        if *key == "battery_state" {
-            if let Some(state) = text(key) {
-                cards.battery.set_text(*row, 0.0, &state);
-            }
-            continue;
-        }
-        cards.battery.set_value(*row, value(key));
+        cards.storage.set_value(*row, value(key));
     }
 }
 
@@ -963,20 +934,60 @@ fn about_page_body(
             page.append(&row);
         }
 
-        // The compatibility report. Pages hide what this machine cannot do so
-        // the working controls are not buried; the detail belongs here, stated
-        // once.
-        page.subheading(&format!("Supported on this machine ({})", working.len()));
+        // The full compatibility report sits behind a button, so About reads as
+        // a summary rather than a wall of rows.
+        let summary = format!(
+            "Supported on this machine ({}); {} not available",
+            working.len(),
+            missing.len()
+        );
+        let toggle = gtk4::ToggleButton::with_label(&format!("Show all controls — {summary}"));
+        toggle.add_css_class("flat");
+        toggle.set_halign(Align::Start);
+        toggle.set_margin_top(16);
+        page.append(&toggle);
+
+        let report = GtkBox::new(Orientation::Vertical, 0);
+        report.set_margin_top(8);
+
+        let supported = Label::new(Some(&format!("Supported ({})", working.len())));
+        supported.add_css_class("llt-subheading");
+        supported.set_halign(Align::Start);
+        report.append(&supported);
         for (label, key) in &working {
-            page.append(&compat_row(label, key, "llt-ok"));
+            report.append(&compat_row(label, key, "llt-ok"));
         }
 
         if !missing.is_empty() {
-            page.subheading(&format!("Not available ({})", missing.len()));
+            let absent = Label::new(Some(&format!("Not available ({})", missing.len())));
+            absent.add_css_class("llt-subheading");
+            absent.set_halign(Align::Start);
+            absent.set_margin_top(12);
+            report.append(&absent);
             for (label, reason) in &missing {
-                page.append(&compat_row(label, reason, "llt-missing"));
+                report.append(&compat_row(label, reason, "llt-missing"));
             }
         }
+
+        let revealer = gtk4::Revealer::new();
+        revealer.set_transition_type(gtk4::RevealerTransitionType::SlideDown);
+        revealer.set_reveal_child(false);
+        revealer.set_child(Some(&report));
+
+        toggle.connect_toggled({
+            let revealer = revealer.clone();
+            let summary = summary.clone();
+            move |button| {
+                let active = button.is_active();
+                revealer.set_reveal_child(active);
+                button.set_label(&if active {
+                    "Hide controls".to_string()
+                } else {
+                    format!("Show all controls — {summary}")
+                });
+            }
+        });
+        page.append(&revealer);
 
         let note = Label::new(Some(
             "Built on GTK 4 and libadwaita. Hardware access via LenovoLegionLinux and the Linux kernel.",

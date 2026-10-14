@@ -211,6 +211,61 @@ static DISCHARGE_RANGE: Mutex<(Option<f64>, Option<f64>)> = Mutex::new((None, No
 /// When the current discharge began, if the machine is discharging.
 static ON_BATTERY_SINCE: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
+/// The previous RAPL energy reading, for computing a power delta.
+static RAPL_PREV: Mutex<Option<(std::time::Instant, u64)>> = Mutex::new(None);
+
+/// The package energy counter under `/sys/class/powercap`, or `None`.
+fn rapl_package_energy_path() -> Option<std::path::PathBuf> {
+    let controllers = std::fs::read_dir("/sys/class/powercap").ok()?;
+    for controller in controllers.flatten() {
+        let Ok(domains) = std::fs::read_dir(controller.path()) else {
+            continue;
+        };
+        for domain in domains.flatten() {
+            let name = std::fs::read_to_string(domain.path().join("name")).unwrap_or_default();
+            if name.trim() == "package-0" {
+                let path = domain.path().join("energy_uj");
+                if path.exists() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Whether CPU package power can be read.
+///
+/// RAPL's energy counter is `0400 root` on many systems — including this one —
+/// so this is `false` and the CPU Power row is simply absent rather than showing
+/// a fake zero. Make the file world-readable (or a udev rule) to enable it.
+pub fn cpu_power_available() -> bool {
+    rapl_package_energy_path()
+        .map(|p| std::fs::read_to_string(&p).is_ok())
+        .unwrap_or(false)
+}
+
+/// CPU package power in watts, from the RAPL energy counter's rate of change.
+///
+/// Returns `None` on the first call after start, because a rate needs two
+/// samples — the same reason CPU utilization starts blank.
+pub fn cpu_power_w() -> Option<f64> {
+    let path = rapl_package_energy_path()?;
+    let energy: u64 = std::fs::read_to_string(&path).ok()?.trim().parse().ok()?;
+    let now = std::time::Instant::now();
+    let mut previous = RAPL_PREV.lock().ok()?;
+    let watts = previous.and_then(|(then, before)| {
+        let seconds = now.duration_since(then).as_secs_f64();
+        if seconds <= 0.0 {
+            return None;
+        }
+        // `wrapping_sub` because the counter is documented to wrap.
+        Some(energy.wrapping_sub(before) as f64 / 1_000_000.0 / seconds)
+    });
+    *previous = Some((now, energy));
+    watts
+}
+
 /// The battery's `status` string.
 fn battery_status() -> Option<String> {
     let dir = crate::paths::battery_dir()?;
