@@ -655,7 +655,9 @@ Ordered by how much of the application stops being empty.
    `install.sh` gained `DESTDIR` staging. The no-password polkit option exists
    for a manual install. Submitting to COPR is an operational step left to the
    maintainer.
-6. ⏳ **Hardware validation** — the module builds against the running kernel
-   (vermagic matches) and its sysfs names match the resolver. **Loading it and
-   writing are not done**: they need root and touch the EC. The procedure is
-   written up in `docs/hardware-validation.md` to be run at the machine.
+6. ▶️ **Hardware validation** — the module **loads** on the reference laptop
+   (config `QNCN`, EC `0x5508`) and the capability report went from 38 to 47
+   readings *(2026-10-14)*. Two bugs were found and fixed by loading it: the
+   touchpad was wrongly attributed to ideapad, and `issupport…` probes were
+   read as `== 1` instead of non-zero. **Writes are still untested** — they need
+   root and touch the EC; the procedure is in `docs/hardware-validation.md`.

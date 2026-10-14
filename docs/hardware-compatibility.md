@@ -74,7 +74,7 @@ Anything the UI shows for these two must be suppressed.
 | Full-speed flag | `<legion>/fan_fullspeed` | ✅ | ✅ | **YES** (WMI) |
 | CPU temperature | hwmon `temp1_input` (milli-°C) | ✅ | – | **YES** |
 | GPU temperature | hwmon `temp2_input` (milli-°C) | ✅ | – | **YES** |
-| IC/chipset temperature | hwmon `temp3_input` | ✅ | – | **NO** (`skip_ic_temp`) |
+| IC/chipset temperature | hwmon `temp3_input` | ✅ | – | **YES** (label "IC Temperature") |
 | Fan 1–n RPM | hwmon `fanN_input` | ✅ | – | **YES** |
 | Fan target RPM | hwmon `fanN_target` | ✅ | – | model-dependent |
 | Fan curve points | hwmon `pwmN_auto_point{M=1..10}_{pwm,temp,temp_hyst,accel,decel}` | ✅ | ✅ | **NO** |
@@ -86,7 +86,7 @@ Anything the UI shows for these two must be suppressed.
 | Battery charge mode (normal / conservation / rapid) | **power_supply** `charge_types` (`Fast [Standard] Long_Life`) | ✅ | ✅ | **YES**, native |
 | Rapid charge | `<legion>/rapidcharge` (ACPI) | ✅ | ✅ | model-dependent |
 | Fn-lock | **ideapad** `VPC2004:00/fn_lock` | ✅ | ✅ | **YES** |
-| Touchpad | **ideapad** `VPC2004:00/touchpad` | ✅ | ✅ | **YES** |
+| Touchpad | **legion** `<legion>/touchpad` (WMI); harmless `ideapad` copy where present | ✅ | ✅ | **YES** via the module |
 | Camera power | **ideapad** `VPC2004:00/camera_power` | ✅ | ✅ | **YES** |
 | Always-on USB charging | **ideapad** `VPC2004:00/usb_charging` | ✅ | ✅ | **YES** |
 | Fan mode (ideapad) | **ideapad** `VPC2004:00/fan_mode` | ✅ | – | present (value `0`) |
@@ -103,6 +103,31 @@ Anything the UI shows for these two must be suppressed.
 | Battery status | `/sys/class/power_supply/BAT0/{status,capacity,...}` | ✅ | – | **YES** |
 | AC adapter | `/sys/class/power_supply/ADP0/online` | ✅ | – | **YES** |
 | USB-C PD sources | `/sys/class/power_supply/ucsi-source-psy-USBC000:00{1,2}` | ✅ | – | present |
+
+### Verified with the module loaded (2026-10-14)
+
+`legion_laptop` was built, loaded (`sudo make reloadmodule`) and the capability
+report re-read on the reference laptop. It went from **38 to 47** available
+readings. Newly live: `fan_fullspeed`, `kbd_backlight`, `ylogo_light`,
+`ioport_light`, `touchpad`, `winkey`, `igpumode`, `gsync`, and `ic_temp`.
+The driver bounded driver `DMI_PRODUCT_NAME: 83LY`, took config `QNCN`, read EC
+`0x5508`, and initialised the keyboard / Y-logo / IO-port LED drivers.
+
+Two corrections this produced:
+
+- **Touchpad is module-gated here, not ideapad.** The `ideapad_acpi` directory
+  has no `touchpad` file on this machine; the control comes from the module's
+  WMI attribute. It read as "not supported by this model" — wrongly — until the
+  module was loaded.
+- **`issupport…` probes return non-zero, not `1`.** `issupportigpumode` reads
+  `3` and `issupportgsync` reads `2` here, so testing `== 1` hid both controls.
+  The check is `> 0`, matching the Windows reference's `IsSupportedAsync`.
+
+Still absent on this unit, and correctly hidden: `overdrive`,
+`instant_boot_ac`, `instant_boot_usb_pd` (the module creates none of those
+attributes here) and `fancurve` (no fan curve on QNCN). `ppt_pl1_tau`,
+`gpu_nv_ctgp`, `gpu_nv_ppab` and `gpu_nv_cpu_boost` report `min == max == 0` in
+performance mode, so they appear only once custom mode accepts writes.
 
 ### nVidia GPU present?
 

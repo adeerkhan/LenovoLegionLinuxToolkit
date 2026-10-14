@@ -22,11 +22,20 @@ maximum until a reboot.
   `instant_boot_ac`, `instant_boot_usb_pd`, `rapidcharge`,
   `battery_conservation`, `fan_fullspeed`.
 
+## What is verified now (2026-10-14)
+
+- **The module loads.** `sudo make reloadmodule` bound `QNCN`, read EC `0x5508`,
+  and initialised the keyboard / Y-logo / IO-port LED drivers. The capability
+  report went from **38 to 47** readings.
+- **Two bugs loading it surfaced are fixed**: the touchpad was wrongly
+  attributed to `ideapad` (it is module/WMI here), and `issupport…` probes were
+  read as `== 1` when they return non-zero (`issupportigpumode` = 3,
+  `issupportgsync` = 2).
+
 ## What is not verified
 
-Loading the module, and every write. Both need root, and writes touch the
-embedded controller. The capability reads and the render path have been checked;
-the write path has not been exercised on hardware.
+**Every write.** Writes need root and touch the embedded controller; the write
+path has not been exercised on hardware. Step 4 below is the procedure for that.
 
 ## Step 0 — prerequisites
 
@@ -43,9 +52,9 @@ sudo make reloadmodule
 sudo dmesg | grep -i legion
 ```
 
-Expect: EC id `0x5508`, and **no** "not in allowlist". `QNCN` is in the DMI
-allowlist for `model_qncn`, so the module should bind. If it refuses, that is
-the allowlist working as intended; report the model/BIOS rather than forcing it.
+*Verified working on the reference laptop: config `QNCN`, EC id `0x5508`, no
+"not in allowlist", LED drivers initialised.* If it refuses, that is the
+allowlist working as intended; report the model/BIOS rather than forcing it.
 
 ## Step 2 — read-only checks, before any write
 
