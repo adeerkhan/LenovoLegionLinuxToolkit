@@ -1,14 +1,20 @@
-//! A **read-only** diagnostic for the keyboard backlight.
+//! A **read-only** diagnostic for the keyboard backlight / RGB controller.
 //!
-//! Why this exists: whether a given Legion keyboard supports four-zone RGB is a
-//! documentation question *and* a hardware question, and the two can disagree.
-//! The upstream project `4JX/L5P-Keyboard-RGB` documents a specific table of
-//! supported USB product IDs; when that table and the machine in front of you
-//! disagree, this settles it.
+//! Whether a Legion keyboard is a 3-state white one or a four-zone RGB one is a
+//! hardware question, and the answer differs by SKU even within a model line.
+//! This probe settles it on the machine in front of you: it issues only
+//! `HIDIOCGFEATURE` (get a Feature report) and never a set, so the worst case is
+//! an empty report.
 //!
-//! It deliberately only ever issues `HIDIOCGFEATURE` (get a Feature report) —
-//! never `HIDIOCSFEATURE`. That makes it safe to run on hardware nobody has
-//! tested: the worst case is that a report comes back empty.
+//! It reads two protocols:
+//!
+//! - **`0xcc`** — the ITE four-zone RGB state, as read by LegionAura and the
+//!   L5P family: `[id, 0x16, effect, speed, brightness, 4×RGB, unused, rtl, ltr]`.
+//! - **`0x5a`** — the vendor firmware Feature report the `4JX/L5P-Keyboard-RGB`
+//!   project uses.
+//!
+//! A device that answers `0xcc` with a plausible state is a four-zone RGB
+//! keyboard; one that leaves the feature report empty is not.
 
 use std::fs::File;
 use std::io::Write;
@@ -31,54 +37,59 @@ fn hid_get_feature_ioctl(len: usize) -> libc::c_ulong {
         | (0x07u64 << IOC_NRSHIFT)) as libc::c_ulong
 }
 
-/// The vendor usage page the ITE keyboard firmware interfaces use, and the
-/// report ID observed on this hardware.
-const VENDOR_PAGE: u16 = 0xff89;
-const REPORT_ID: u8 = 0x5a;
+/// The ITE four-zone RGB state report (LegionAura / L5P family).
+const REPORT_ID_ITE_RGB: u8 = 0xcc;
+/// The vendor firmware Feature report used by `4JX/L5P-Keyboard-RGB`.
+const REPORT_ID_L5P: u8 = 0x5a;
+
+const ITE_VENDOR: u16 = 0x048d;
 
 fn main() -> std::io::Result<()> {
     let mut out = std::io::stdout();
 
-    writeln!(out, "Legion keyboard backlight probe (read-only)")?;
-    writeln!(out, "=========================================\n")?;
+    writeln!(out, "Legion keyboard RGB probe (read-only)")?;
+    writeln!(out, "====================================\n")?;
 
-    let devices = hidraw_devices();
+    let devices: Vec<(String, String)> = hidraw_devices()
+        .into_iter()
+        .filter(|(_, id)| parse_vendor(id) == ITE_VENDOR)
+        .collect();
+
     if devices.is_empty() {
-        writeln!(out, "No hidraw devices found.")?;
+        writeln!(out, "No ITE ({ITE_VENDOR:#06x}) hidraw devices found.")?;
         return Ok(());
     }
 
     for (path, id) in &devices {
-        writeln!(out, "{path}")?;
-        writeln!(out, "  USB id:     {id}")?;
-
-        let vendor = parse_vendor(id);
         let product = parse_product(id);
-        writeln!(out, "  vendor:     {vendor:#06x}   product: {product:#06x}")?;
+        writeln!(out, "{path}   (ITE {ITE_VENDOR:#06x}:{product:#06x})")?;
         writeln!(
             out,
-            "  in upstream supported set: {}",
-            in_supported_set(product)
+            "  in the 4JX/L5P documented set: {}",
+            in_4jx_set(product)
         )?;
 
-        match probe_feature(path) {
-            Ok(bytes) => {
-                writeln!(out, "  feature report (Report ID {REPORT_ID:#04x}):")?;
-                writeln!(out, "    {}", hex(&bytes))?;
-                interpret(&bytes)?;
+        let mut denied = false;
+        for &report in &[REPORT_ID_ITE_RGB, REPORT_ID_L5P] {
+            match probe_feature(path, report) {
+                Ok(bytes) => {
+                    writeln!(out, "  Feature report {report:#04x}: {}", hex(&bytes))?;
+                    if report == REPORT_ID_ITE_RGB {
+                        interpret_ite_state(&bytes)?;
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                    denied = true;
+                    break;
+                }
+                Err(e) => writeln!(out, "  Feature report {report:#04x}: unavailable ({e})")?,
             }
-            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
-                writeln!(
-                    out,
-                    "  feature report: permission denied — hidraw nodes are root-only."
-                )?;
-                writeln!(
-                    out,
-                    "      Re-run with `sudo`, or install a udev rule granting the"
-                )?;
-                writeln!(out, "      `plugdev` group read access to the device.")?;
-            }
-            Err(e) => writeln!(out, "  feature report: unavailable ({e})")?,
+        }
+        if denied {
+            writeln!(
+                out,
+                "  permission denied — hidraw nodes are root-only. Re-run with `sudo`."
+            )?;
         }
         writeln!(out)?;
     }
@@ -111,8 +122,7 @@ fn hidraw_devices() -> Vec<(String, String)> {
     found
 }
 
-/// `HID_ID` from sysfs is `BUS:VENDOR:PRODUCT`, each four hex digits of bus and
-/// four of vendor, zero-padded — e.g. `0003:0000046D:0000C092`.
+/// `HID_ID` is `BUS:VENDOR:PRODUCT`, each zero-padded hex.
 fn parse_vendor(id: &str) -> u16 {
     id.split(':')
         .nth(1)
@@ -128,7 +138,7 @@ fn parse_product(id: &str) -> u16 {
 }
 
 /// The table published by `4JX/L5P-Keyboard-RGB`.
-fn in_supported_set(product: u16) -> bool {
+fn in_4jx_set(product: u16) -> bool {
     matches!(
         product,
         0xc955
@@ -145,14 +155,14 @@ fn in_supported_set(product: u16) -> bool {
     )
 }
 
-/// Issue HIDIOCGFEATURE. Read-only by construction.
-fn probe_feature(path: &str) -> std::io::Result<Vec<u8>> {
+/// Issue HIDIOCGFEATURE for one report ID. Read-only by construction.
+fn probe_feature(path: &str, report: u8) -> std::io::Result<Vec<u8>> {
     let file = File::open(path)?;
 
     // First byte is the report ID, the rest the payload.
-    let len = 1 + 65;
+    let len = 1 + 64;
     let mut buf = vec![0u8; len];
-    buf[0] = REPORT_ID;
+    buf[0] = report;
 
     let request = hid_get_feature_ioctl(len);
     // SAFETY: `file` is a valid fd for the duration of the call, and `buf` is
@@ -161,9 +171,6 @@ fn probe_feature(path: &str) -> std::io::Result<Vec<u8>> {
     if rc < 0 {
         return Err(std::io::Error::last_os_error());
     }
-
-    // Read back whatever the device put in the buffer.
-    buf.truncate(len);
     Ok(buf)
 }
 
@@ -175,34 +182,42 @@ fn hex(bytes: &[u8]) -> String {
         .join(" ")
 }
 
-/// Print the firmware version fields the L5P protocol returns at offset 2..6.
-///
-/// A device in the supported set answers with a plausible version string; one
-/// outside it typically returns zeros or an echo of the request.
-fn interpret(bytes: &[u8]) -> std::io::Result<()> {
+/// Decode the `0xcc` ITE RGB state, per the LegionAura/L5P layout.
+fn interpret_ite_state(bytes: &[u8]) -> std::io::Result<()> {
     let mut out = std::io::stdout();
-    if bytes.len() > 1 && bytes[1..].iter().all(|&b| b == 0) {
+    if bytes.len() < 20 {
+        writeln!(out, "    -> too short to be an RGB state.")?;
+        return Ok(());
+    }
+    if bytes.iter().all(|&b| b == 0) {
         writeln!(
             out,
-            "    -> all-zero payload: the firmware did not answer. Consistent"
+            "    -> all zero: the controller did not answer 0xcc (likely not a \
+             four-zone RGB keyboard)."
         )?;
+        return Ok(());
+    }
+
+    let effect = match bytes[2] {
+        0x00 => "brightness-only",
+        0x01 => "Static",
+        0x03 => "Breath",
+        0x04 => "Wave",
+        0x06 => "Hue",
+        _ => "unknown",
+    };
+    writeln!(
+        out,
+        "    -> FOUR-ZONE RGB STATE: effect={effect} speed={} brightness={}",
+        bytes[3], bytes[4]
+    )?;
+    for zone in 0..4 {
+        let base = 5 + zone * 3;
+        let (r, g, b) = (bytes[base], bytes[base + 1], bytes[base + 2]);
         writeln!(
             out,
-            "       with a keyboard that has no RGB control interface."
-        )?;
-    } else if bytes[0] == 0 && bytes.iter().filter(|&&b| b == 0).count() >= bytes.len() / 2 {
-        writeln!(out, "    -> mostly zeros: no meaningful firmware response.")?;
-    } else {
-        let nonzero = bytes.iter().filter(|&&b| b != 0).count();
-        writeln!(
-            out,
-            "    -> {nonzero} non-zero bytes. A response was returned; compare"
-        )?;
-        writeln!(
-            out,
-            "       against the same probe on a known-supported keyboard."
+            "       zone {zone}: rgb({r}, {g}, {b}) #{r:02x}{g:02x}{b:02x}"
         )?;
     }
-    let _ = VENDOR_PAGE;
     Ok(())
 }
