@@ -178,7 +178,7 @@ impl SysfsBackend {
     /// does not suppress the control.
     fn legion_supports(&self, attr: &str) -> bool {
         match self.paths.file(attr).and_then(|p| read_trim(&p).ok()) {
-            Some(value) => value == "1",
+            Some(value) => support_value_says_yes(&value),
             None => true,
         }
     }
@@ -1000,6 +1000,16 @@ fn keys_from_ideapad() -> &'static [&'static str] {
     ]
 }
 
+/// Interpret an `issupport…` probe.
+///
+/// The probe returns non-zero when the firmware backs a control, and the value
+/// is not always `1`: on a Legion 5 15IRX10 `issupportigpumode` reads `3` and
+/// `issupportgsync` reads `2`. The Windows reference tests `result > 0`; testing
+/// for `1` hid both controls on a machine that supports them.
+fn support_value_says_yes(raw: &str) -> bool {
+    raw.trim().parse::<i64>().map(|n| n > 0).unwrap_or(true)
+}
+
 /// Present `low-power` as "Quiet" — the firmware's own name for that mode.
 fn humanise_profile(value: &str) -> String {
     match value {
@@ -1174,6 +1184,20 @@ mod tests {
                 "module-gated control {key} is not declared"
             );
         }
+    }
+
+    /// The support probe is non-zero when supported, and its value is not
+    /// always `1`: a Legion 5 15IRX10 reports `3` for igpumode and `2` for
+    /// gsync. Reading it as `== 1` hid both on a machine that supports them.
+    #[test]
+    fn support_probes_are_read_as_non_zero() {
+        assert!(support_value_says_yes("1"));
+        assert!(support_value_says_yes("2"));
+        assert!(support_value_says_yes("3"));
+        assert!(!support_value_says_yes("0"));
+        // An unreadable probe must not suppress the control.
+        assert!(support_value_says_yes(""));
+        assert!(support_value_says_yes("nonsense"));
     }
 
     /// Every icon a capability declares must be one the theme can draw.
