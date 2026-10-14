@@ -1392,64 +1392,82 @@ fn rgb_section() -> Option<LltCard> {
         }
     });
 
-    // --- Zones ----------------------------------------------------------
-    // The keyboard's 24 zones as a 4x6 grid of colour swatches — the same
-    // idea as the reference's 24-zone view. Each swatch is a GTK colour
-    // button, so a click opens the system colour chooser.
-    let zone_grid = gtk4::Grid::new();
-    zone_grid.add_css_class("llt-keyboard");
-    zone_grid.set_margin_top(8);
-    zone_grid.set_margin_bottom(8);
-    zone_grid.set_row_spacing(4);
-    zone_grid.set_column_spacing(4);
-    zone_grid.set_halign(Align::Start);
-    let mut swatches: Vec<gtk4::ColorButton> = Vec::new();
-    for row in 0..legiontoolkit::rgb::NUM_ROWS {
-        for col in 0..legiontoolkit::rgb::NUM_COLS {
-            let index = row * legiontoolkit::rgb::NUM_COLS + col;
-            let button = gtk4::ColorButton::new();
-            button.set_size_request(58, 22);
-            button.set_rgba(&to_rgba(state.borrow().zones[index]));
-            // Stagger the rows, as keyboard rows are staggered.
-            if row % 2 == 1 {
-                button.set_margin_start(16);
-            }
-            if row == 3 {
-                button.set_margin_end(24);
-            }
-            zone_grid.attach(&button, col as i32, row as i32, 1, 1);
-            swatches.push(button);
-        }
-    }
-    let swatches = Rc::new(swatches);
+    // --- Zones: the whole keyboard, each key lit by its zone ------------
+    // The controller addresses 24 regions rather than keys, so every key takes
+    // the colour of the region it lands in (see `rgb::zone_for_key`). Drawing a
+    // real keyboard is what makes the zones legible: you can see which keys a
+    // colour touches instead of counting abstract boxes.
+    let keyboard = gtk4::Grid::new();
+    keyboard.add_css_class("llt-keyboard");
+    keyboard.set_row_spacing(4);
+    keyboard.set_column_spacing(4);
+    keyboard.set_halign(Align::Start);
+    keyboard.set_margin_top(8);
+    keyboard.set_margin_bottom(8);
 
-    // Picking a colour applies it to every zone in the current scope: all 24, the
-    // row, the column (the four zones below), or just the one picked.
-    for (index, swatch) in swatches.iter().enumerate() {
+    let mut zone_keys: Vec<ZoneKey> = Vec::new();
+    for (row, keys) in legiontoolkit::rgb::keyboard_rows().iter().enumerate() {
+        let line = GtkBox::new(Orientation::Horizontal, 2);
+        line.set_halign(Align::Start);
+        for (col, (label, width)) in keys.iter().enumerate() {
+            let zone = legiontoolkit::rgb::zone_for_key(row, col);
+            let button = gtk4::Button::with_label(label);
+            button.set_size_request((width * 26.0) as i32, 22);
+            button.set_focus_on_click(false);
+            let provider = gtk4::CssProvider::new();
+            provider.load_from_string(&key_colour_css(state.borrow().zones[zone]));
+            button.style_context().add_provider(&provider, 800);
+            line.append(&button);
+            zone_keys.push(ZoneKey {
+                row,
+                col,
+                zone,
+                button,
+                provider,
+            });
+        }
+        keyboard.attach(&line, 0, row as i32, 1, 1);
+    }
+    let zone_keys = Rc::new(zone_keys);
+
+    // Picking a colour on a key applies it to every zone in the current scope,
+    // and repaints the keys that those zones cover.
+    for key in zone_keys.iter() {
+        let (row, col) = (key.row, key.col);
         let state = Rc::clone(&state);
-        let swatches = Rc::clone(&swatches);
-        swatch.connect_color_set(move |button| {
-            let rgba = button.rgba();
-            let rgb = [
-                (rgba.red() * 255.0).round() as u8,
-                (rgba.green() * 255.0).round() as u8,
-                (rgba.blue() * 255.0).round() as u8,
-            ];
-            let row = index / legiontoolkit::rgb::NUM_COLS;
-            let col = index % legiontoolkit::rgb::NUM_COLS;
-            let cols = legiontoolkit::rgb::NUM_COLS;
-            let rows = legiontoolkit::rgb::NUM_ROWS;
-            let scope = state.borrow().scope;
-            let indices: Vec<usize> = match scope {
-                ZoneScope::All => (0..cols * rows).collect(),
-                ZoneScope::Row => (0..cols).map(|c| row * cols + c).collect(),
-                ZoneScope::Column => (0..rows).map(|r| r * cols + col).collect(),
-                ZoneScope::Zone => vec![index],
-            };
-            for i in indices {
-                state.borrow_mut().zones[i] = rgb;
-                swatches[i].set_rgba(&to_rgba(rgb));
-            }
+        let zone_keys = Rc::clone(&zone_keys);
+        key.button.connect_clicked(move |button| {
+            let dialog = gtk4::ColorDialog::new();
+            let parent = button.root().and_downcast::<gtk4::Window>();
+            let state = Rc::clone(&state);
+            let zone_keys = Rc::clone(&zone_keys);
+            dialog.choose_rgba(
+                parent.as_ref(),
+                None::<&gtk4::gdk::RGBA>,
+                None::<&gtk4::gio::Cancellable>,
+                move |result| {
+                    let Ok(rgba) = result else {
+                        return;
+                    };
+                    let rgb = [
+                        (rgba.red() * 255.0).round() as u8,
+                        (rgba.green() * 255.0).round() as u8,
+                        (rgba.blue() * 255.0).round() as u8,
+                    ];
+                    let scope = state.borrow().scope;
+                    let zones: Vec<usize> = match scope {
+                        ZoneScope::All => (0..legiontoolkit::rgb::NUM_ZONES).collect(),
+                        ZoneScope::Row => legiontoolkit::rgb::zones_in_row(row),
+                        ZoneScope::Column => legiontoolkit::rgb::zones_in_col(col),
+                        ZoneScope::Zone => vec![legiontoolkit::rgb::zone_for_key(row, col)],
+                    };
+                    for zone in zones {
+                        state.borrow_mut().zones[zone] = rgb;
+                    }
+                    let zones = state.borrow().zones;
+                    paint_zones(&zone_keys, &zones);
+                },
+            );
         });
     }
 
@@ -1504,7 +1522,7 @@ fn rgb_section() -> Option<LltCard> {
     for (index, (label, widget)) in [
         ("Effect", effect_dd.clone().upcast::<gtk4::Widget>()),
         ("Apply colour to", scope_dd.clone().upcast::<gtk4::Widget>()),
-        ("Zones", zone_grid.clone().upcast::<gtk4::Widget>()),
+        ("Zones", keyboard.clone().upcast::<gtk4::Widget>()),
         ("Brightness", brightness.clone().upcast::<gtk4::Widget>()),
         ("Speed", speed.clone().upcast::<gtk4::Widget>()),
     ]
@@ -1573,7 +1591,7 @@ fn rgb_section() -> Option<LltCard> {
             let effect_dd = effect_dd.clone();
             let brightness = brightness.clone();
             let speed = speed.clone();
-            let swatches = swatches.clone();
+            let zone_keys = Rc::clone(&zone_keys);
             let apply_current = Rc::clone(&apply_current);
             move |button| {
                 if !button.is_active() {
@@ -1597,9 +1615,7 @@ fn rgb_section() -> Option<LltCard> {
                 effect_dd.set_selected(effect_index(effect));
                 brightness.set_value(preset.brightness as f64);
                 speed.set_value(preset.speed as f64);
-                for (slot, swatch) in swatches.iter().enumerate() {
-                    swatch.set_rgba(&to_rgba(zones[slot]));
-                }
+                paint_zones(&zone_keys, &zones);
                 apply_current();
             }
         });
@@ -1664,13 +1680,29 @@ fn effect_index(effect: legiontoolkit::rgb::Effect) -> u32 {
     }
 }
 
-/// A colour as a GTK RGBA.
-fn to_rgba(rgb: [u8; 3]) -> gtk4::gdk::RGBA {
-    gtk4::gdk::RGBA::new(
-        rgb[0] as f32 / 255.0,
-        rgb[1] as f32 / 255.0,
-        rgb[2] as f32 / 255.0,
-        1.0,
+/// One key of the RGB zone editor: the button, its colour provider, and the
+/// zone it belongs to.
+struct ZoneKey {
+    row: usize,
+    col: usize,
+    zone: usize,
+    button: gtk4::Button,
+    provider: gtk4::CssProvider,
+}
+
+/// Repaint every key from the zone colours.
+fn paint_zones(keys: &[ZoneKey], zones: &[[u8; 3]; legiontoolkit::rgb::NUM_ZONES]) {
+    for key in keys {
+        key.provider
+            .load_from_string(&key_colour_css(zones[key.zone]));
+    }
+}
+
+/// CSS that paints one keyboard key its zone's colour.
+fn key_colour_css(rgb: [u8; 3]) -> String {
+    format!(
+        "button {{ background-color: #{:02x}{:02x}{:02x}; border-radius: 4px;          padding: 0; min-height: 0; }}",
+        rgb[0], rgb[1], rgb[2]
     )
 }
 

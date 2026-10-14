@@ -141,6 +141,159 @@ impl Effect {
     ];
 }
 
+/// The physical keyboard, as rows of `(label, width in key units)`.
+///
+/// A standard ANSI layout. Used only to draw the zone editor: it is the shape
+/// the user recognises, and it lets each zone be shown where it actually sits on
+/// the deck rather than as an abstract grid.
+///
+/// The reference draws a 24-zone keyboard as 24 bars; drawing the whole
+/// keyboard and colouring each key by its zone is clearer, which is what we do.
+pub fn keyboard_rows() -> &'static [&'static [(&'static str, f64)]] {
+    &[
+        &[
+            ("Esc", 1.0),
+            ("F1", 1.0),
+            ("F2", 1.0),
+            ("F3", 1.0),
+            ("F4", 1.0),
+            ("F5", 1.0),
+            ("F6", 1.0),
+            ("F7", 1.0),
+            ("F8", 1.0),
+            ("F9", 1.0),
+            ("F10", 1.0),
+            ("F11", 1.0),
+            ("F12", 1.0),
+            ("Del", 1.0),
+        ],
+        &[
+            ("~", 1.0),
+            ("1", 1.0),
+            ("2", 1.0),
+            ("3", 1.0),
+            ("4", 1.0),
+            ("5", 1.0),
+            ("6", 1.0),
+            ("7", 1.0),
+            ("8", 1.0),
+            ("9", 1.0),
+            ("0", 1.0),
+            ("-", 1.0),
+            ("=", 1.0),
+            ("Back", 2.0),
+        ],
+        &[
+            ("Tab", 1.5),
+            ("Q", 1.0),
+            ("W", 1.0),
+            ("E", 1.0),
+            ("R", 1.0),
+            ("T", 1.0),
+            ("Y", 1.0),
+            ("U", 1.0),
+            ("I", 1.0),
+            ("O", 1.0),
+            ("P", 1.0),
+            ("[", 1.0),
+            ("]", 1.0),
+            ("\\", 1.5),
+        ],
+        &[
+            ("Caps", 1.75),
+            ("A", 1.0),
+            ("S", 1.0),
+            ("D", 1.0),
+            ("F", 1.0),
+            ("G", 1.0),
+            ("H", 1.0),
+            ("J", 1.0),
+            ("K", 1.0),
+            ("L", 1.0),
+            (";", 1.0),
+            ("'", 1.0),
+            ("Enter", 2.25),
+        ],
+        &[
+            ("Shift", 2.25),
+            ("Z", 1.0),
+            ("X", 1.0),
+            ("C", 1.0),
+            ("V", 1.0),
+            ("B", 1.0),
+            ("N", 1.0),
+            ("M", 1.0),
+            (",", 1.0),
+            (".", 1.0),
+            ("/", 1.0),
+            ("Shift", 2.75),
+        ],
+        &[
+            ("Ctrl", 1.25),
+            ("Fn", 1.25),
+            ("Win", 1.25),
+            ("Alt", 1.25),
+            ("", 6.25),
+            ("Alt", 1.25),
+            ("Fn", 1.25),
+            ("Ctrl", 1.25),
+        ],
+    ]
+}
+
+/// The zone (0..=23) a key at `row`, `col` belongs to.
+///
+/// The controller addresses 24 regions, not keys, so a key's zone is the region
+/// it lands in: the deck's width split into six columns, its height into four
+/// bands. Derived from the key's centre in its own row, which keeps the mapping
+/// stable and testable without a per-model keymap.
+pub fn zone_for_key(row: usize, col: usize) -> usize {
+    let keys = match keyboard_rows().get(row) {
+        Some(keys) => keys,
+        None => return 0,
+    };
+    let Some((_, width)) = keys.get(col) else {
+        return 0;
+    };
+    let total: f64 = keys.iter().map(|(_, w)| w).sum();
+    let start: f64 = keys[..col].iter().map(|(_, w)| w).sum();
+    let centre = (start + width / 2.0) / total;
+
+    let column = (centre.clamp(0.0, 0.999) * NUM_COLS as f64).floor() as usize;
+    let band = ((row as f64 + 0.5) / NUM_ROWS as f64 * NUM_ROWS as f64).floor() as usize;
+    band.min(NUM_ROWS - 1) * NUM_COLS + column.min(NUM_COLS - 1)
+}
+
+/// The distinct zones the keys of one keyboard row fall into.
+pub fn zones_in_row(row: usize) -> Vec<usize> {
+    let Some(keys) = keyboard_rows().get(row) else {
+        return Vec::new();
+    };
+    let mut zones = Vec::new();
+    for col in 0..keys.len() {
+        let zone = zone_for_key(row, col);
+        if !zones.contains(&zone) {
+            zones.push(zone);
+        }
+    }
+    zones
+}
+
+/// The distinct zones the keys stacked in one keyboard column fall into.
+pub fn zones_in_col(col: usize) -> Vec<usize> {
+    let mut zones = Vec::new();
+    for (row, keys) in keyboard_rows().iter().enumerate() {
+        if col >= keys.len() {
+            continue;
+        }
+        let zone = zone_for_key(row, col);
+        if !zones.contains(&zone) {
+            zones.push(zone);
+        }
+    }
+    zones
+}
+
 /// One group of LEDs sharing a mode and colour.
 struct Group {
     mode: u8,
@@ -523,6 +676,54 @@ mod tests {
         assert_eq!(packet[4], PROFILE);
         let payload_len = packet[2] as usize | ((packet[3] as usize) << 8);
         assert!(payload_len > 3, "payload includes at least one group");
+    }
+
+    /// Every key maps into a zone, and every zone is used.
+    #[test]
+    fn the_keyboard_maps_onto_all_24_zones() {
+        let mut used = [false; NUM_ZONES];
+        for row in 0..keyboard_rows().len() {
+            for col in 0..keyboard_rows()[row].len() {
+                let zone = zone_for_key(row, col);
+                assert!(zone < NUM_ZONES, "row {row} col {col} -> zone {zone}");
+                used[zone] = true;
+            }
+        }
+        assert!(used.iter().all(|u| *u), "unused zones: {used:?}");
+    }
+
+    /// Each keyboard row lands in the band it belongs to: the deck's six rows
+    /// split into four, so the bottom three share the last band.
+    #[test]
+    fn each_key_row_maps_to_its_band() {
+        for (row, keys) in keyboard_rows().iter().enumerate() {
+            let band = row.min(NUM_ROWS - 1);
+            for col in 0..keys.len() {
+                assert_eq!(
+                    zone_for_key(row, col) / NUM_COLS,
+                    band,
+                    "row {row} col {col}"
+                );
+            }
+        }
+    }
+
+    /// A keyboard row and a keyboard column each cover a contiguous set of
+    /// zones, which is what "apply to this row / this column" needs.
+    #[test]
+    fn row_and_column_zone_sets_are_contiguous() {
+        let row = zones_in_row(2);
+        assert!(!row.is_empty());
+        assert_eq!(
+            row.iter().max().unwrap() - row.iter().min().unwrap(),
+            row.len() - 1
+        );
+
+        let col = zones_in_col(3);
+        assert!(
+            col.len() >= 3,
+            "a column spans at least three of the four bands"
+        );
     }
 
     /// Per-zone colours become one group per distinct colour, each carrying the
