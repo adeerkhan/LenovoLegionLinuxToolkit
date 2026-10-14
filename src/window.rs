@@ -19,9 +19,8 @@ use gtk4::{Box as GtkBox, ListBox, Orientation, ScrolledWindow, Stack};
 use crate::pages::Pages;
 use legiontoolkit::backends::{Backend, MockBackend, SysfsBackend};
 
-/// Sidebar entries, in the order the reference uses. The dashboard is always
-/// first; the rest are one per capability group, plus About.
-const NAV: [(&str, &str, &str); 9] = [
+/// Main sidebar entries, in the order the reference uses.
+const MAIN_NAV: [(&str, &str, &str); 6] = [
     ("go-home-symbolic", "Home", "home"),
     ("power-profile-performance-symbolic", "Power", "power"),
     (
@@ -32,7 +31,10 @@ const NAV: [(&str, &str, &str); 9] = [
     ("keyboard-brightness-symbolic", "Lighting", "lighting"),
     ("battery-symbolic", "Battery", "battery"),
     ("emblem-system-symbolic", "System", "system"),
-    ("system-run-symbolic", "Automation", "automation"),
+];
+
+/// Pinned to the bottom of the sidebar, as the reference does.
+const BOTTOM_NAV: [(&str, &str, &str); 2] = [
     ("preferences-system-symbolic", "Settings", "settings"),
     ("help-about-symbolic", "About", "about"),
 ];
@@ -140,13 +142,10 @@ impl MainWindow {
             stack.add_titled(widget, Some(id), title);
         }
         // ------------------------------------------------------------------
-        // Sidebar
+        // Sidebar — main entries, then Settings and About pinned at the bottom
         // ------------------------------------------------------------------
-        let sidebar_list = ListBox::new();
-        sidebar_list.add_css_class("navigation-sidebar");
-        sidebar_list.set_selection_mode(gtk4::SelectionMode::Single);
-
-        for (icon, title, _page_id) in NAV {
+        // A navigation row: an icon and a title, tagged with its page id.
+        fn nav_row(icon: &str, title: &str, page_id: &str) -> adw::ActionRow {
             let row = adw::ActionRow::builder()
                 .title(title)
                 // Adwaita interprets a title as Pango markup unless told
@@ -156,21 +155,46 @@ impl MainWindow {
                 .activatable(true)
                 .build();
             row.add_prefix(&gtk4::Image::from_icon_name(icon));
-            row.set_widget_name(_page_id);
-            sidebar_list.append(&row);
+            row.set_widget_name(page_id);
+            row
         }
 
-        if let Some(first) = sidebar_list.row_at_index(0) {
-            sidebar_list.select_row(Some(&first));
+        let main_list = ListBox::new();
+        main_list.add_css_class("navigation-sidebar");
+        main_list.set_selection_mode(gtk4::SelectionMode::Single);
+        for (icon, title, page_id) in MAIN_NAV {
+            main_list.append(&nav_row(icon, title, page_id));
         }
 
-        sidebar_list.connect_row_activated({
+        let bottom_list = ListBox::new();
+        bottom_list.add_css_class("navigation-sidebar");
+        bottom_list.set_selection_mode(gtk4::SelectionMode::Single);
+        for (icon, title, page_id) in BOTTOM_NAV {
+            bottom_list.append(&nav_row(icon, title, page_id));
+        }
+
+        // Selected rows are per-list, so activating a row in one list clears the
+        // other; otherwise two rows would read as selected at once.
+        main_list.connect_row_activated({
             let stack = stack.clone();
+            let bottom = bottom_list.clone();
             move |_, row| {
-                let name = row.widget_name();
-                stack.set_visible_child_name(name.as_str());
+                stack.set_visible_child_name(row.widget_name().as_str());
+                bottom.unselect_all();
             }
         });
+        bottom_list.connect_row_activated({
+            let stack = stack.clone();
+            let main = main_list.clone();
+            move |_, row| {
+                stack.set_visible_child_name(row.widget_name().as_str());
+                main.unselect_all();
+            }
+        });
+
+        if let Some(first) = main_list.row_at_index(0) {
+            main_list.select_row(Some(&first));
+        }
 
         let sidebar_page = adw::NavigationPage::builder()
             .title("Legion Toolkit")
@@ -180,9 +204,19 @@ impl MainWindow {
             &ScrolledWindow::builder()
                 .hscrollbar_policy(gtk4::PolicyType::Never)
                 .vexpand(true)
-                .child(&sidebar_list)
+                .child(&main_list)
                 .build(),
         );
+        sidebar_box.append(&gtk4::Separator::new(Orientation::Horizontal));
+
+        // The bottom entries are outside the scroll view, so they stay visible
+        // at the foot of the panel however long the main list gets.
+        let bottom_holder = GtkBox::new(Orientation::Vertical, 0);
+        bottom_holder.set_margin_top(6);
+        bottom_holder.set_margin_bottom(6);
+        bottom_holder.append(&bottom_list);
+        sidebar_box.append(&bottom_holder);
+
         sidebar_page.set_child(Some(&sidebar_box));
 
         // ------------------------------------------------------------------
@@ -292,7 +326,6 @@ impl MainWindow {
             seconds_since_refresh.set(0);
 
             pages_for_loop.borrow().refresh();
-            pages_for_loop.borrow().automation_tick();
             glib::ControlFlow::Continue
         });
 

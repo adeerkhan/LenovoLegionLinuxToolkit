@@ -1,4 +1,4 @@
-//! Services: privilege escalation, profiles and automation.
+//! Services: privilege escalation and profiles.
 //!
 //! Privilege lives in its own module because it is the only place the
 //! application needs elevated rights, and keeping it in one module makes the
@@ -7,7 +7,6 @@
 use crate::backends::Backend;
 
 pub mod autostart;
-pub mod notify;
 pub mod privilege;
 
 /// States that make the whole application inert, rather than making one control
