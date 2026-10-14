@@ -1299,6 +1299,60 @@ fn settings_page(refresh_seconds: Rc<RefCell<u32>>) -> Page {
         });
         page.append(card.widget());
 
+        // --- Updates ----------------------------------------------------
+        page.subheading("Updates");
+
+        let (card, updates) = setting_switch(
+            "Check for Updates",
+            "Look for a newer release on GitHub once per launch.",
+            current.check_for_updates,
+        );
+        updates.connect_state_set(|_, active| {
+            let _ = settings::update(|s| s.check_for_updates = active);
+            glib::Propagation::Proceed
+        });
+        page.append(card.widget());
+
+        let check_now = gtk4::Button::with_label("Check now");
+        check_now.set_valign(Align::Center);
+        let update_status = Label::new(None);
+        update_status.add_css_class("llt-card-note");
+        update_status.set_halign(Align::Start);
+        update_status.set_wrap(true);
+        let check_card = LltCard::new();
+        check_card.set_header(
+            "preferences-system-symbolic",
+            "Check for updates",
+            Some("Ask GitHub for the newest release now."),
+            &[],
+        );
+        check_card.set_accessory(&check_now);
+        check_card.append(&update_status);
+        check_now.connect_clicked({
+            let status = update_status.clone();
+            move |_| {
+                status.set_label("Checking…");
+                legiontoolkit::services::update::check_in_background();
+                let status = status.clone();
+                let mut polls = 0;
+                glib::timeout_add_seconds_local(2, move || {
+                    polls += 1;
+                    if polls <= 15 && !legiontoolkit::services::update::finished() {
+                        return glib::ControlFlow::Continue;
+                    }
+                    status.set_label(&match legiontoolkit::services::update::available() {
+                        Some(update) => format!(
+                            "Version {} is available. See the banner at the top of the window.",
+                            update.version
+                        ),
+                        None => "Legion Toolkit is up to date.".to_string(),
+                    });
+                    glib::ControlFlow::Break
+                });
+            }
+        });
+        page.append(check_card.widget());
+
         // --- About the project ------------------------------------------
         page.subheading("About");
         page.append(

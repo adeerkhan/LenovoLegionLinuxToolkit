@@ -55,6 +55,27 @@ fn select_backend() -> Box<dyn Backend> {
     Box::new(backend)
 }
 
+/// The "a newer release exists" banner, with a button that opens the release
+/// page in the browser.
+fn update_banner(update: &legiontoolkit::services::update::Update) -> adw::Banner {
+    let banner = adw::Banner::builder()
+        .title(format!("Legion Toolkit {} is available", update.version))
+        .button_label("Download")
+        .revealed(true)
+        .build();
+    let url = update.url.clone();
+    banner.connect_button_clicked(move |banner| {
+        gtk4::UriLauncher::new(&url).launch(
+            None::<&adw::ApplicationWindow>,
+            None::<&gtk4::gio::Cancellable>,
+            |_result| {},
+        );
+        // Dismissed either way: the user has seen the update now.
+        banner.set_revealed(false);
+    });
+    banner
+}
+
 /// A dismissible banner. `AdwBanner` carries no body text, so the actionable
 /// part goes in the title and the button only silences it.
 fn warning_banner(title: &str) -> adw::Banner {
@@ -227,6 +248,27 @@ impl MainWindow {
             content_box.append(&warning_banner(warning));
         }
         content_box.append(&stack);
+
+        // ------------------------------------------------------------------
+        // Update notification
+        // ------------------------------------------------------------------
+        // One background GitHub query per launch (or when the user asks), and a
+        // poller that shows a banner when a newer release exists.
+        if legiontoolkit::settings::current().check_for_updates {
+            legiontoolkit::services::update::check_in_background();
+        }
+        let content_for_update = content_box.clone();
+        let mut update_polls = 0;
+        glib::timeout_add_seconds_local(2, move || {
+            update_polls += 1;
+            if update_polls <= 30 && !legiontoolkit::services::update::finished() {
+                return glib::ControlFlow::Continue;
+            }
+            if let Some(update) = legiontoolkit::services::update::available() {
+                content_for_update.append(&update_banner(&update));
+            }
+            glib::ControlFlow::Break
+        });
 
         let content_page = adw::NavigationPage::builder()
             .title("Dashboard")

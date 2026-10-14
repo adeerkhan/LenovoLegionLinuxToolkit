@@ -1,64 +1,160 @@
 # Legion Toolkit
 
-A native GTK 4 / libadwaita control panel for Lenovo Legion laptops.
+A native GTK 4 / libadwaita control panel for **Lenovo Legion** laptops — power
+modes, thermals, fans, GPU working mode, battery charging, the 24-zone RGB
+keyboard, and presets.
 
-Written in Rust, on GTK 4 and libadwaita — the toolkits that give a Linux
-desktop application its native look and behaviour, so this reads as a
-first-class citizen of the GNOME desktop rather than a port of a Windows
-application.
+Written in Rust on GTK 4 and libadwaita, so it reads as a first-class citizen of
+the GNOME desktop rather than a port of a Windows application.
 
-**[Project plan](docs/PLAN.md)** · **[Hardware compatibility](docs/hardware-compatibility.md)** · **[Architecture](docs/architecture.md)** · **[Hardware validation](docs/hardware-validation.md)**
+**[Project plan](docs/PLAN.md)** · **[Architecture](docs/architecture.md)** · **[Data sources](docs/data-sources.md)** · **[Hardware compatibility](docs/hardware-compatibility.md)** · **[Hardware validation](docs/hardware-validation.md)**
+
+---
+
+## Screenshots
+
+| Home (light) | Home (dark) |
+|---|---|
+| ![Home, light](assets/home.png) | ![Home, dark](assets/dark-home.png) |
+
+| Battery | Lighting — 24-zone RGB editor |
+|---|---|
+| ![Battery](assets/battery.png) | ![Lighting](assets/lighting.png) |
+
+| Processors & GPU | Settings |
+|---|---|
+| ![Processors](assets/processors.png) | ![Settings](assets/settings.png) |
+
+> Screenshots are produced by this project itself — `--shot` renders any page to
+> a PNG with no display, so the pictures above are the application, not mock-ups.
+
+## Table of contents
+
+- [Features](#features)
+- [Why capability-first](#why-capability-first)
+- [Compatibility](#compatibility)
+- [Requirements](#requirements)
+- [What gets installed](#what-gets-installed--and-where-the-sensor-data-comes-from)
+- [Installation](#installation)
+- [Updating](#updating)
+- [Usage](#usage)
+- [Troubleshooting](#troubleshooting)
+- [Logs](#logs)
+- [Contributing](#contributing)
+- [Thanks](#thanks)
+- [License](#license)
 
 ---
 
-## What it does
+## Features
 
-A dashboard that shows what your laptop can actually do, and lets you control it:
+**Dashboard (Home)** — the landing page, laid out the way the Windows original's
+is: a row of sensor cards (CPU, GPU, Motherboard + Battery, Memory + Disk) above
+titled sections (Power, Graphics, Lighting) holding the headline controls.
 
-| Section   | Controls |
-|-----------|----------|
-| **Power**      | Power mode (quiet / balanced / performance / custom), maximum fan speed |
-| **Thermal**    | CPU and GPU temperature, fan RPM |
-| **GPU**        | Working mode (hybrid / integrated only / hybrid auto), G-Sync |
-| **Lighting**   | Keyboard backlight, Y-logo light, IO-port light |
-| **Battery**    | Charge level and status, battery mode (normal / conservation / rapid) |
-| **System**     | Fn-lock, touchpad, camera power, always-on USB charging, Windows-key lock, Instant Boot |
-| **Automation** | Pipelines that apply settings on AC/battery, a timer, or a power-mode change |
+| Area | What you can do |
+|---|---|
+| **Power** | Power mode — Quiet / Balanced / Performance / Custom; Maximum Fan Speed; Battery Mode (normal / conservation / rapid charge); Always-on USB |
+| **Processors & GPU** | Power limits from the firmware (PL1, PL2, PL1 tau, CPU cross-loading, GPU cTGP, GPU PPAB, GPU→CPU boost, AC offset, CPU and GPU temperature caps) as sliders; GPU Working Mode (Hybrid / Integrated Only / Hybrid Auto); G-Sync |
+| **Thermal** | CPU, GPU, chipset and SSD temperature; CPU and GPU fan speed; CPU utilisation, core clock and package power; GPU utilisation, clock, power and VRAM; memory and swap; disk usage |
+| **Lighting** | The **24-zone RGB keyboard**: a keyboard-shaped editor, per-zone colours, six presets, hardware effects (static, spiral rainbow, rainbow wave, colour change / pulse / wave, smooth), brightness and speed; Y-logo and IO-port lights |
+| **Battery** | Level, status, health, cycle count, voltage, remaining charge, time remaining, observed discharge extremes, time on battery |
+| **System** | Fn-lock, touchpad, camera, always-on USB, Windows-key lock, Instant Boot (AC and USB-PD) |
+| **Presets** | Named power presets — capture the current power limits and mode into one, apply it later, from every machine |
+| **Settings** | Theme, temperature unit, refresh interval, compact mode, start minimised, minimise on close, start on login, update checks |
 
-Readings are unprivileged. Individual writes escalate through polkit to a small
-helper binary, so the application itself never runs as root.
+**Capability-first, not model-first.** Availability varies wildly between models
+and even between power modes on the same machine, so the UI is generated from a
+live capability report. A control this machine lacks is **not** drawn as a dead
+grey switch — it is omitted, with a single sentence at the foot of the page naming
+why, and the full list on the About page.
 
-### Capability-first, not model-first
+**Reads are unprivileged; each write escalates.** The application runs as your
+user and reads hardware directly. A write goes through `polkit` to a small helper
+binary, so the process itself never runs as root — which keeps desktop
+notifications and session integration working.
 
-Legion hardware differs enormously between models. This laptop, a Legion 5
-15IRX10, has **no fan curve and no power limits at all**. Rather than show a
-broken page, the application builds its UI from a capability report generated
-at runtime, and a control that is unsupported explains *why* rather than
-greying out mysteriously.
+## Why capability-first
 
-That is why the same binary works across the whole Legion range. Adding a
-laptop that supports something new means adding a capability that reports
-itself available — there is no `match model` anywhere in the presentation layer.
+Legion hardware differs enormously: this project's reference laptop (Legion 5
+15IRX10) has **no fan curve and no driver power limits**, while a Legion Pro 7
+has both. Rather than branch on a model name, every capability reports whether it
+is available and, when it is not, *why* — "needs the kernel module" and "your
+hardware does not have this" are different problems needing different actions,
+and a disabled switch cannot tell them apart.
 
----
+## Compatibility
+
+- **Any Legion laptop**, with or without the out-of-tree driver.
+- Verified in depth on a **Lenovo Legion 5 15IRX10 (83LY, BIOS QNCN38WW)**,
+  kernel 7.2, Fedora 44 — including the 24-zone RGB keyboard.
+- Batteries, readings and the sensor row work with **no driver at all**; the
+  kernel's in-tree drivers already expose them.
+- **RGB keyboards**: Lenovo Gen10 24-zone (`048d:c195`) and per-key+chassis
+  (`048d:c197`). Other keyboards still get the WMI on/off/brightness control.
+- AMD and Intel CPUs; NVIDIA GPUs via `nvidia-smi`; AMD GPUs read from sysfs.
 
 ## Requirements
 
-- Linux with **GTK 4.22 or newer and libadwaita 1.9 or newer** — the versions
-  the `gtk4`/`libadwaita` crates are pinned to (Fedora 44 ships both)
-- The `legion_laptop` kernel module (`LenovoLegionLinux`) for full control
-- `polkit` for privileged writes
+**To build** — a Rust toolchain (1.85+) and the GTK development headers:
 
-Anything backed by `ideapad_acpi` — battery conservation, Fn-lock, touchpad,
-camera, always-on USB — works **without** the kernel module, so the dashboard
-shows live data out of the box.
+```sh
+# Fedora
+sudo dnf install gtk4-devel libadwaita-devel pango-devel \
+    gdk-pixbuf2-devel cairo-gobject-devel graphene-devel
+```
+
+**To run**:
+
+- **GTK 4.22 or newer and libadwaita 1.9 or newer** (Fedora 44 ships both;
+  Ubuntu from 25.10)
+- `polkit` for privileged writes
+- *Optional*: the **`legion_laptop`** kernel module from
+  [LenovoLegionLinux](https://github.com/johnfanv2/LenovoLegionLinux), which adds
+  the keyboard backlight, Y-logo and IO-port LEDs, GPU working mode, G-Sync,
+  Windows-key lock and Instant Boot
+
+## What gets installed — and where the sensor data comes from
+
+Installing this project installs **this project's binaries and nothing else**:
+
+| Path | What |
+|---|---|
+| `/usr/bin/legiontoolkit` | the application |
+| `/usr/bin/legiontoolkit-keyboard-probe` | a read-only keyboard diagnostic |
+| `/usr/libexec/legiontoolkit-helper` | the privileged write helper, invoked per write |
+| `/usr/share/polkit-1/actions/org.legiontoolkit.helper.policy` | the polkit action for the helper |
+| `/usr/share/applications/legiontoolkit.desktop` | desktop entry |
+| `/usr/share/icons/hicolor/…/apps/legiontoolkit.png` | icons |
+| `/etc/udev/rules.d/99-legiontoolkit-hidraw.rules` | grants your user access to the RGB keyboard's hidraw node |
+
+The RPM and DEB declare their runtime dependencies (`gtk4`, `libadwaita`,
+`polkit`), so those come from your package manager as usual.
+
+**No "sensor library" ships with this application — and none is needed.** All the
+readings come from interfaces the **Linux kernel** already exposes:
+
+| Data | Kernel source |
+|---|---|
+| CPU / chipset temperature, fan speed | `coretemp`, `k10temp`, `hwmon` |
+| SSD temperature | `nvme` |
+| CPU package power, clock, utilisation | `intel-rapl`, `cpufreq`, `/proc/stat` |
+| GPU (temperature, utilisation, clocks, power, VRAM) | `nvidia-smi` — installed by NVIDIA's own driver, not by us |
+| Battery, adapter | `power_supply` |
+| Power mode | the ACPI platform-profile interface |
+| Power limits | the kernel's `firmware-attributes` class |
+| Fn-lock, touchpad, camera, USB charging, conservation | `ideapad_acpi` |
+| Keyboard colour | the ITE RGB controller over USB (`hidraw`) |
+
+The only extra package worth installing for GPU telemetry is NVIDIA's own driver
+(which brings `nvidia-smi`). Everything else is in the kernel you already run.
 
 ## Installation
 
 `make install` builds the application and its privileged helper, installs the
 polkit policy, desktop entry, icons and a udev rule, and places the helper
-exactly where the polkit policy names it. The Makefile owns every destination, so
-it is reversible with `make uninstall` and relocatable with a different `PREFIX`.
+exactly where the policy names it. The Makefile owns every destination, so it is
+reversible with `make uninstall` and relocatable with a different `PREFIX`.
 
 ### 1. Prerequisites
 
@@ -77,15 +173,14 @@ sudo apt install libgtk-4-dev libadwaita-1-dev libpango1.0-dev \
 ### 2. Install
 
 ```sh
-git clone https://github.com/adeerkhan/LenovoLegionLinuxToolkit
+git clone https://github.com/adeerkhan/LenovoLegionLinuxToolkit.git
 cd LenovoLegionLinuxToolkit
 sudo make install
 legiontoolkit            # or launch it from your app menu
 ```
 
 Run `make distcheck` first to print the install layout without touching the
-system, and use `make install PREFIX=~/.local` to install into your home
-directory instead.
+system, and `make install PREFIX=~/.local` to install into your home directory.
 
 `make install` also installs the udev rule that lets your user open the RGB
 keyboard's hidraw node, so the **Keyboard RGB** card works unprivileged. A
@@ -141,107 +236,149 @@ sudo make uninstall        # binaries, policy, desktop entry, icons and rules
 
 ### Packages and Flatpak
 
-Not yet in any distribution's repositories. `packaging/` holds an RPM spec (build
-with `make rpm`), a Debian `debian/` directory and an AUR `PKGBUILD`. Flatpak is
-deliberately not used: it cannot write to `/sys`, and this privilege model needs a
-root helper outside the sandbox.
+Not yet in any distribution's repository. `packaging/` holds an RPM spec (build
+with `make rpm`; verified end-to-end on Fedora 44), a Debian `debian/` directory
+for `dpkg-buildpackage`, and an AUR `PKGBUILD`. Flatpak is deliberately not used:
+it cannot write to `/sys`, and this privilege model needs a root helper outside
+the sandbox.
 
 ---
 
-## Building from source
+### Not packaged yet
+
+No distribution repository carries it yet. `packaging/` holds a **RPM spec**
+(build with `make rpm`; verified end-to-end on Fedora 44), a **Debian**
+`debian/` directory for `dpkg-buildpackage`, and an **AUR `PKGBUILD`**. Flatpak
+is deliberately not used: it cannot write to `/sys`, and the privilege model
+here needs a root helper outside the sandbox.
+
+## Updating
+
+On launch, the application asks GitHub's public releases API whether a newer
+release exists, and shows a banner with a **Download** button that opens the
+release page. That is one HTTPS request to GitHub, once per launch, and you can
+turn it off in Settings → Updates.
+
+To take the update:
 
 ```sh
-git clone https://github.com/adeerkhan/LenovoLegionLinuxToolkit.git
 cd LenovoLegionLinuxToolkit
-cargo build --release
+git pull && sudo make install
 ```
 
-`make install` is the supported route; `sudo cargo install` cannot install the
-polkit action or the udev rule that the helper and the RGB card need.
+or use your package manager if you installed a distribution package.
 
-Run without installing — reading hardware needs no privileges:
+## Usage
 
 ```sh
-cargo run --release
+legiontoolkit                              # the application
+LEGIONTOOLKIT_MOCK=1 legiontoolkit         # render the UI with no hardware
+LEGIONTOOLKIT_SHOT=/tmp/home.png \
+  LEGIONTOOLKIT_PAGE=home legiontoolkit    # render a page to a PNG, no display
 ```
 
-### Useful commands
+The mock backend (`LEGIONTOOLKIT_MOCK=1`) drives the whole UI without hardware,
+including the unavailable-control path, so development and screenshots never need
+the laptop attached.
+
+Other useful commands:
 
 ```sh
-# Render the UI with no hardware, using the mock backend.
-LEGIONTOOLKIT_MOCK=1 cargo run --release
-
-# The capability, path-resolution, policy and RGB-protocol tests.
-# Needs no display installed.
-cargo test --lib --no-default-features
-
-# The full gate this project must pass.
-make check
-
-# Print the capability report for this machine, including what is missing.
-cargo test --lib --no-default-features capability_report -- --nocapture
-
-# Build a distribution RPM from the current commit.
-make rpm
-
-# Render a page to a PNG offline (no display needed).
-LEGIONTOOLKIT_SHOT=/tmp/home.png LEGIONTOOLKIT_PAGE=home cargo run --release
+make check                                  # fmt + clippy + tests — the gate
+cargo test --lib --no-default-features      # the library tests, no display needed
+sudo ./target/debug/legiontoolkit-keyboard-probe   # read-only RGB keyboard probe
+./target/release/legiontoolkit-helper --check      # verify the privileged write path
 ```
 
----
+## Troubleshooting
 
-## Current status
+**Nothing changes when I toggle something.** The helper is not installed, or you
+launched the binary from `target/` instead of the installed one. The banner at
+the top of the window says which; fix with `sudo make install` and relaunch.
 
-Working: the capability layer, the read-only dashboard, per-write privilege
-escalation, presets, battery charge mode, the 24-zone RGB keyboard (colour,
-effects and presets), settings, and the four-card Home dashboard.
+**A password prompt on the first write.** Expected — writable hardware files are
+`0644 root`. Polkit remembers the authorisation for the session. To drop it, see
+the no-password option in the installation guide.
 
-Not implemented: fan-curve editing (this machine's firmware has no fan curve —
-the suppression path is built instead), automation, and the firmware's own
-`Fn+Space` lighting slots, which the USB protocol does not expose.
+**"Requires the legion_laptop kernel module".** The control is driver-backed and
+the out-of-tree module is not loaded:
 
-Verified on a Lenovo Legion 5 15IRX10 (83LY, BIOS QNCN38WW), kernel 7.2,
-Fedora 44.
+```sh
+cd Reference/LenovoLegionLinux/kernel_module
+make && sudo make reloadmodule
+```
 
----
+**"The firmware is not accepting changes to this in the current power mode."**
+Several power limits only accept writes in Custom mode. Switch the power mode
+first; the control then becomes live.
+
+**Keyboard RGB says permission denied.** The udev rule is missing (common with a
+`PREFIX=~/.local` install). Install it by hand:
+
+```sh
+sudo install -Dm644 packaging/99-legiontoolkit-hidraw.rules \
+    /etc/udev/rules.d/99-legiontoolkit-hidraw.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+**Warnings about `vkAcquireNextImageKHR` / swapchains.** GTK's Vulkan renderer on
+NVIDIA/Wayland; cosmetic, not from this application. Launch with
+`GSK_RENDERER=ngl legiontoolkit` to use the GL renderer instead.
+
+## Logs
+
+The application logs through `tracing`, so the level is set with `RUST_LOG`:
+
+```sh
+RUST_LOG=debug legiontoolkit 2>&1 | tee legion-toolkit.log
+```
+
+For a bug report, include that log plus the About page's machine and driver
+strings — every row there has a copy button, so they can be pasted straight in.
+
+## Contributing
+
+`make check` is the gate this project must pass: `cargo fmt --check`,
+`cargo clippy --all-targets -- -D warnings`, and `cargo test --no-default-features`.
+The library half is deliberately GTK-free so the capability, path-resolution,
+policy and RGB-protocol layers are testable with no display.
+
+Bug reports are welcome with the log and About strings above.
 
 ## Thanks
 
-This project stands on the shoulders of a lot of reverse engineering done by
-other people, and would not exist without either of these:
+This project stands on a lot of other people's reverse engineering.
 
-- **[LenovoLegionLinux](https://github.com/johnfanv2/LenovoLegionLinux)** by
-  John Fan — the kernel driver and userspace toolkit that makes every
-  capability this application exposes possible. The footnotes in its
-  `doc/FEATURES_AND_TESTING.md` were the single most useful reference in
-  building the hardware layer here, and its documentation of the DMI allowlist
-  and the fan-curve capability matrix is what made writing correct code on an
-  undocumented machine possible.
-
+- **[LenovoLegionLinux](https://github.com/johnfanv2/LenovoLegionLinux)** by John
+  Fan — the kernel driver and userspace toolkit that makes every hardware
+  capability this application exposes possible. Its documentation of the DMI
+  allowlist and the per-model capability matrix is what made writing correct code
+  on an undocumented machine possible; the vendored copy under `Reference/` was
+  the hardware reference throughout.
+- **[keyRGB](https://github.com/Rainexn0b/keyRGB)** by Rainexn0b — the Linux tray
+  app whose reverse engineering of the Lenovo Gen10 **24-zone ITE keyboard
+  controller** is the basis of this project's own RGB implementation
+  (`src/rgb.rs`) and its zone mapping. No keyRGB code is copied: the USB report
+  layout is reimplemented from its published backend, and its udev rule pattern
+  is what ours follows. The RGB controls on this application's Lighting page
+  exist because that work came first.
 - **[Lenovo Legion Toolkit](https://github.com/LenovoLegionToolkit-Team/LenovoLegionToolkit)** —
   the Windows original, and the reference for the feature set, information
-  architecture and visual language this project reproduces on Linux. Its
-  card-based design system and its habit of hiding unsupported controls rather
-  than breaking them are the two ideas borrowed most directly.
+  architecture and visual language reproduced here. The copy vendored under
+  `Reference/` is theirs.
+- **Vitals** (by corecoding / tjormola) — the GNOME Shell extension whose global
+  `hwmon` sweep taught this project to find fan RPM where a driver-specific
+  lookup found none.
+- **legendk95 on Discord**, for the first reverse engineering of how to talk to a
+  Legion keyboard at all, and the users who report hardware on models this
+  project's author cannot test.
 
-  The copy vendored under `Reference/` in this repository is theirs.
-
-- **[keyRGB](https://github.com/Rainexn0b/keyRGB)** by Rainexn0b — the Linux
-  tray app whose reverse engineering of the Lenovo Gen10 24-zone ITE keyboard
-  controller is the basis of this project's own RGB implementation
-  (`src/rgb.rs`). No keyRGB code is copied; the USB report layout is
-  reimplemented from its published backend, and this is our thanks.
-
-Also thanks to legendk95 on Discord for reverse-engineering how to talk to the
-Legion keyboard in the first place, which is what makes the RGB probe useful to
-anyone other than the person who wrote it.
-
----
+No code is copied from any of them. This project reimplements interfaces and
+behaviour, and communicates across documented boundaries.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+GPL-3.0-or-later — see [LICENSE](LICENSE).
 
-The two projects above are licensed GPL-2.0 and GPL-3.0 respectively. No code
-is copied from either; this project reimplements interfaces and behaviour, and
-communicates across documented boundaries.
+The projects above are licensed GPL-2.0 (LenovoLegionLinux), GPL-2.0 (Vitals),
+GPL-3.0 (Lenovo Legion Toolkit) and MIT (keyRGB) respectively.

@@ -53,6 +53,9 @@ pub struct Settings {
     /// Hide the window instead of quitting when it is closed, so the
     /// application keeps running in the background.
     pub minimize_on_close: bool,
+    /// Ask GitHub about newer releases in the background, and offer to open the
+    /// release page when one exists.
+    pub check_for_updates: bool,
     /// Re-open at the last window size.
     ///
     /// Size, not position: GTK 4 removed programmatic window placement, so the
@@ -76,6 +79,7 @@ impl Default for Settings {
             start_minimized: false,
             autostart: false,
             minimize_on_close: false,
+            check_for_updates: true,
             remember_window_size: true,
             // Deliberately `None`: a first run should use the toolkit's own
             // default rather than one shipped in a defaults block.
@@ -234,6 +238,7 @@ mod tests {
             start_minimized: true,
             autostart: true,
             minimize_on_close: true,
+            check_for_updates: false,
             remember_window_size: false,
             window_width: Some(1024),
             window_height: Some(768),
