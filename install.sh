@@ -125,13 +125,17 @@ if [ "$mode" = install ]; then
                           "$POLKITRULESDIR/49-legiontoolkit.rules"
     fi
 
-    # Best effort: without these the entry and icon can linger until the next
-    # login, and a missing tool is not a reason to fail the install.
-    if command -v update-desktop-database >/dev/null; then
-        update-desktop-database -q "$DESKTOPDIR" 2>/dev/null || true
-    fi
-    if command -v gtk-update-icon-cache >/dev/null; then
-        gtk-update-icon-cache -q -t -f "$ICONTHEMEDIR" 2>/dev/null || true
+    # Best effort on a real install: without these the entry and icon can linger
+    # until the next login, and a missing tool is not a reason to fail the
+    # install. Skipped when staging into DESTDIR, where the caches would be
+    # unpackaged build-root files and the target's own triggers rebuild them.
+    if [ -z "$DESTDIR" ]; then
+        if command -v update-desktop-database >/dev/null; then
+            update-desktop-database -q "$DESKTOPDIR" 2>/dev/null || true
+        fi
+        if command -v gtk-update-icon-cache >/dev/null; then
+            gtk-update-icon-cache -q -t -f "$ICONTHEMEDIR" 2>/dev/null || true
+        fi
     fi
 
     echo "installed to $PREFIX"
