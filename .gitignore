@@ -487,14 +487,22 @@ FodyWeavers.xsd
 /.reasonix
 
 
-# Working notes, kept local only.
-/docs
+# `docs/` used to be local scratch; it is tracked now, because the plan, the
+# data-source notes and the architecture document are part of the project and
+# the README links to them.
+
+# Vendored reference material is third-party and read-only. `Reference/Vitals`
+# and `Reference/LenovoLegionLinux` are their own git repositories, so adding
+# this directory would record gitlinks rather than files. Clone the upstreams
+# alongside when you need to consult them.
+/Reference/
+
 
 # --- Rust -------------------------------------------------------------------
 /target
 Cargo.lock is committed for a binary: reproducible builds matter more than the
 ability to depend on floating library versions.
-Reference/
+
 
 # CodeGraph index
 /.codegraph
