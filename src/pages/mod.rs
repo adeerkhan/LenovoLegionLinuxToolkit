@@ -1315,6 +1315,16 @@ fn rgb_section() -> Option<LltCard> {
     }
 
     /// The card's live selection.
+    /// Which zones a picked colour applies to.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum ZoneScope {
+        All,
+        Row,
+        /// The zones stacked below the one picked.
+        Column,
+        Zone,
+    }
+
     struct Ui {
         off: bool,
         effect: Effect,
@@ -1322,6 +1332,7 @@ fn rgb_section() -> Option<LltCard> {
         brightness: u32,
         speed: u32,
         forward: bool,
+        scope: ZoneScope,
     }
 
     let state = Rc::new(RefCell::new(Ui {
@@ -1331,6 +1342,7 @@ fn rgb_section() -> Option<LltCard> {
         brightness: 40,
         speed: 5,
         forward: true,
+        scope: ZoneScope::Zone,
     }));
 
     let card = LltCard::new();
@@ -1405,20 +1417,40 @@ fn rgb_section() -> Option<LltCard> {
             if row == 3 {
                 button.set_margin_end(24);
             }
-            button.connect_color_set({
-                let state = Rc::clone(&state);
-                move |button| {
-                    let rgba = button.rgba();
-                    state.borrow_mut().zones[index] = [
-                        (rgba.red() * 255.0).round() as u8,
-                        (rgba.green() * 255.0).round() as u8,
-                        (rgba.blue() * 255.0).round() as u8,
-                    ];
-                }
-            });
             zone_grid.attach(&button, col as i32, row as i32, 1, 1);
             swatches.push(button);
         }
+    }
+    let swatches = Rc::new(swatches);
+
+    // Picking a colour applies it to every zone in the current scope: all 24, the
+    // row, the column (the four zones below), or just the one picked.
+    for (index, swatch) in swatches.iter().enumerate() {
+        let state = Rc::clone(&state);
+        let swatches = Rc::clone(&swatches);
+        swatch.connect_color_set(move |button| {
+            let rgba = button.rgba();
+            let rgb = [
+                (rgba.red() * 255.0).round() as u8,
+                (rgba.green() * 255.0).round() as u8,
+                (rgba.blue() * 255.0).round() as u8,
+            ];
+            let row = index / legiontoolkit::rgb::NUM_COLS;
+            let col = index % legiontoolkit::rgb::NUM_COLS;
+            let cols = legiontoolkit::rgb::NUM_COLS;
+            let rows = legiontoolkit::rgb::NUM_ROWS;
+            let scope = state.borrow().scope;
+            let indices: Vec<usize> = match scope {
+                ZoneScope::All => (0..cols * rows).collect(),
+                ZoneScope::Row => (0..cols).map(|c| row * cols + c).collect(),
+                ZoneScope::Column => (0..rows).map(|r| r * cols + col).collect(),
+                ZoneScope::Zone => vec![index],
+            };
+            for i in indices {
+                state.borrow_mut().zones[i] = rgb;
+                swatches[i].set_rgba(&to_rgba(rgb));
+            }
+        });
     }
 
     // --- Brightness and speed ------------------------------------------
@@ -1443,12 +1475,35 @@ fn rgb_section() -> Option<LltCard> {
         move |scale| state.borrow_mut().speed = scale.value() as u32
     });
 
+    // --- What a colour applies to ---------------------------------------
+    let scopes = [
+        ("All zones", ZoneScope::All),
+        ("This row", ZoneScope::Row),
+        ("This column (4 zones)", ZoneScope::Column),
+        ("This zone", ZoneScope::Zone),
+    ];
+    let scope_names: Vec<&str> = scopes.iter().map(|(label, _)| *label).collect();
+    let scope_dd = gtk4::DropDown::from_strings(&scope_names);
+    scope_dd.set_selected(3);
+    scope_dd.set_valign(Align::Center);
+    scope_dd.connect_selected_notify({
+        let state = Rc::clone(&state);
+        move |dropdown| {
+            let scope = scopes
+                .get(dropdown.selected() as usize)
+                .map(|(_, scope)| *scope)
+                .unwrap_or(ZoneScope::Zone);
+            state.borrow_mut().scope = scope;
+        }
+    });
+
     // --- Rows -----------------------------------------------------------
     let grid = gtk4::Grid::new();
     grid.set_column_spacing(12);
     grid.set_row_spacing(8);
     for (index, (label, widget)) in [
         ("Effect", effect_dd.clone().upcast::<gtk4::Widget>()),
+        ("Apply colour to", scope_dd.clone().upcast::<gtk4::Widget>()),
         ("Zones", zone_grid.clone().upcast::<gtk4::Widget>()),
         ("Brightness", brightness.clone().upcast::<gtk4::Widget>()),
         ("Speed", speed.clone().upcast::<gtk4::Widget>()),

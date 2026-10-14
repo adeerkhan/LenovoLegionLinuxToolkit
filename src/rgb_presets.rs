@@ -54,8 +54,24 @@ impl RgbPreset {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RgbPresetStore {
+    /// Bumped whenever the built-in defaults change shape, so a file written by
+    /// an older build is replaced rather than silently keeping its stale look.
+    ///
+    /// A missing field must read as `0`, not as the current version: the
+    /// container's `#[serde(default)]` would otherwise take the value from
+    /// `Default::default()` and defeat the migration.
+    #[serde(default = "default_version")]
+    pub version: u32,
     pub presets: Vec<RgbPreset>,
     pub active: usize,
+}
+
+/// The current presets schema.
+pub const VERSION: u32 = 2;
+
+/// What a file without a version counts as: an older build wrote it.
+fn default_version() -> u32 {
+    0
 }
 
 impl Default for RgbPresetStore {
@@ -88,7 +104,11 @@ impl Default for RgbPresetStore {
                 speed: 5,
             },
         ];
-        Self { presets, active: 0 }
+        Self {
+            version: VERSION,
+            presets,
+            active: 0,
+        }
     }
 }
 
@@ -117,12 +137,20 @@ impl RgbPresetStore {
         let Ok(text) = std::fs::read_to_string(&path) else {
             return Self::default();
         };
-        serde_json::from_str::<Self>(&text)
-            .map(|store| store.sanitised())
-            .unwrap_or_else(|e| {
-                tracing::warn!("{} is unreadable ({e}); using defaults", path.display());
-                Self::default()
-            })
+        match serde_json::from_str::<Self>(&text) {
+            Ok(store) if store.version == VERSION => store.sanitised(),
+            // An older build wrote its defaults here, so editing the file would
+            // not change them. Discard and write the current ones instead.
+            _ => {
+                tracing::info!(
+                    "{} predates the current presets; using the new defaults",
+                    path.display()
+                );
+                let defaults = Self::default();
+                let _ = defaults.save();
+                defaults
+            }
+        }
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
@@ -136,6 +164,7 @@ impl RgbPresetStore {
 
     /// Keep the active index in range and every preset 24 zones wide.
     fn sanitised(mut self) -> Self {
+        self.version = VERSION;
         if self.presets.is_empty() {
             self.presets = Self::default().presets;
         }
@@ -198,6 +227,20 @@ mod tests {
         let text = r#"{"presets":[{"name":"x","effect":"static","zones":[[1,2,3]],"brightness":5,"speed":5}],"active":0}"#;
         let store: RgbPresetStore = serde_json::from_str(text).unwrap();
         assert_eq!(store.sanitised().presets[0].zones().len(), NUM_ZONES);
+    }
+
+    /// The migration only fires if a missing version reads as *old*. With the
+    /// container's `#[serde(default)]` a missing field took the value from
+    /// `Default::default()` — the current version — so a legacy file looked
+    /// fresh and kept its stale presets forever.
+    #[test]
+    fn a_file_without_a_version_counts_as_old() {
+        let text = r#"{"presets":[{"name":"1","effect":"static","zones":[[1,2,3]],"brightness":5,"speed":5}],"active":0}"#;
+        let store: RgbPresetStore = serde_json::from_str(text).unwrap();
+        assert_eq!(
+            store.version, 0,
+            "a missing version must not read as current"
+        );
     }
 
     #[test]
