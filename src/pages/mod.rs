@@ -995,6 +995,23 @@ fn about_page_body(
             page.append(&row);
         }
 
+        // The project link, so anyone reading the About page can find the
+        // source and follow it.
+        let link = gtk4::LinkButton::with_label(
+            "https://github.com/adeerkhan/LenovoLegionLinuxToolkit",
+            "LenovoLegionLinuxToolkit on GitHub",
+        );
+        let link_row = GtkBox::new(Orientation::Horizontal, 12);
+        link_row.add_css_class("llt-card");
+        link_row.set_margin_bottom(8);
+        let link_name = Label::new(Some("Project"));
+        link_name.add_css_class("llt-card-title");
+        link_name.set_halign(Align::Start);
+        link_name.set_hexpand(true);
+        link_row.append(&link_name);
+        link_row.append(&link);
+        page.append(&link_row);
+
         // The full compatibility report sits behind a button, so About reads as
         // a summary rather than a wall of rows.
         let summary = format!(

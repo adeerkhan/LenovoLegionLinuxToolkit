@@ -258,7 +258,7 @@ impl Backend for SysfsBackend {
             let has_coretemp = paths::find_hwmon_by_name("coretemp").is_some();
             let mut b = Builder::new("cpu_temp", Kind::ReadOnly, Group::Thermal)
                 .label("CPU Temperature")
-                .icon("org.gnome.Settings-device-diagnostics-symbolic")
+                .icon("applications-system-symbolic")
                 .unit("°C");
             match (&legion, has_coretemp) {
                 (Some(path), _) => {
@@ -451,7 +451,7 @@ impl Backend for SysfsBackend {
         caps.push(
             Builder::new("cpu_utilization", Kind::ReadOnly, Group::Processors)
                 .label("CPU Utilization")
-                .icon("org.gnome.Settings-device-diagnostics-symbolic")
+                .icon("applications-system-symbolic")
                 .unit("%")
                 .read(|| Ok(Value::Float(system::cpu_percent().unwrap_or(0.0))))
                 .build(),
@@ -462,7 +462,7 @@ impl Backend for SysfsBackend {
             caps.push(
                 Builder::new("cpu_power", Kind::ReadOnly, Group::Processors)
                     .label("CPU Package Power")
-                    .icon("org.gnome.Settings-device-diagnostics-symbolic")
+                    .icon("applications-system-symbolic")
                     .unit("W")
                     .read(|| Ok(Value::Float(system::cpu_power_w().unwrap_or(0.0))))
                     .build(),
@@ -472,7 +472,7 @@ impl Backend for SysfsBackend {
             caps.push(
                 Builder::new("cpu_clock", Kind::ReadOnly, Group::Processors)
                     .label("CPU Core Clock")
-                    .icon("org.gnome.Settings-device-diagnostics-symbolic")
+                    .icon("applications-system-symbolic")
                     .unit("MHz")
                     .read(|| Ok(Value::Float(system::cpu_clock_mhz().unwrap_or(0.0))))
                     .build(),
@@ -650,20 +650,19 @@ impl Backend for SysfsBackend {
             );
         }
 
-        caps.push(
-            Builder::new("battery_cycles", Kind::ReadOnly, Group::Battery)
-                .label("Cycle Count")
-                .icon("battery-symbolic")
-                .read(|| {
-                    let cycles = paths::battery_text("cycle_count");
-                    if cycles.is_empty() {
-                        Ok(Value::Text("—".into()))
-                    } else {
-                        Ok(Value::Text(cycles))
-                    }
-                })
-                .build(),
-        );
+        // Only claim this when the battery actually reports a cycle count. A
+        // placeholder returned by an "available" capability is exactly what the
+        // `available_capabilities_return_values` invariant forbids: the page
+        // would show a dash where a number belongs.
+        let mut cycles = Builder::new("battery_cycles", Kind::ReadOnly, Group::Battery)
+            .label("Cycle Count")
+            .icon("battery-symbolic");
+        if paths::battery_text("cycle_count").is_empty() {
+            cycles = cycles.unavailable("This battery reports no cycle count");
+        } else {
+            cycles = cycles.read(|| Ok(Value::Text(paths::battery_text("cycle_count"))));
+        }
+        caps.push(cycles.build());
 
         if let Some(home) = paths::battery_dir() {
             let d1 = home.clone();
@@ -1154,6 +1153,11 @@ mod tests {
     /// only come from sampling.
     #[test]
     fn battery_page_capabilities_are_present() {
+        // A machine with no battery has no battery page to fill; asserting its
+        // keys there would fail for a reason that is not a bug.
+        if paths::battery_dir().is_none() {
+            return;
+        }
         let caps = SysfsBackend::new().capabilities();
         let has = |key: &str| caps.iter().any(|c| c.key == key);
 
