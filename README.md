@@ -214,6 +214,12 @@ other people, and would not exist without either of these:
   **LenovoLegionToolkit-Team**. The copy vendored under `Reference/` in this
   repository is theirs.
 
+- **[keyRGB](https://github.com/Rainexn0b/keyRGB)** by Rainexn0b — the Linux
+  tray app whose reverse engineering of the Lenovo Gen10 24-zone ITE keyboard
+  controller is the basis of this project's own RGB implementation
+  (`src/rgb.rs`). No keyRGB code is copied; the USB report layout is
+  reimplemented from its published backend, and this is our thanks.
+
 Also thanks to legendk95 on Discord for reverse-engineering how to talk to the
 Legion keyboard in the first place, which is what makes the RGB probe useful to
 anyone other than the person who wrote it.

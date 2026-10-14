@@ -13,6 +13,7 @@ pub mod icons;
 pub mod paths;
 pub mod policy;
 pub mod presets;
+pub mod rgb;
 pub mod services;
 pub mod settings;
 pub mod system;

@@ -976,8 +976,22 @@ fn about_page_body(
             let val = Label::new(Some(value));
             val.add_css_class("llt-card-subtitle");
             val.set_wrap(true);
+            val.set_xalign(1.0);
             row.append(&key);
             row.append(&val);
+
+            // Each value can be copied — machine id, driver, backend — because
+            // these are exactly the strings a user pastes into a bug report.
+            let copy = gtk4::Button::from_icon_name("edit-copy-symbolic");
+            copy.add_css_class("flat");
+            copy.set_tooltip_text(Some("Copy"));
+            copy.set_valign(Align::Center);
+            let text = value.to_string();
+            copy.connect_clicked(move |button| {
+                button.clipboard().set_text(&text);
+            });
+            row.append(&copy);
+
             page.append(&row);
         }
 
@@ -1286,47 +1300,205 @@ fn settings_page(refresh_seconds: Rc<RefCell<u32>>) -> Page {
 // Keyboard RGB — delegated to keyRGB
 // ---------------------------------------------------------------------------
 
-/// A card explaining that the RGB keyboard is driven by keyRGB, with a button to
-/// launch it. `None` when this machine has no such keyboard.
+/// A card that controls the keyboard's RGB lighting directly.
 ///
-/// This application deliberately does not reimplement the RGB controller: two
-/// programs writing the same keyboard interfere, which keyRGB documents.
+/// `None` when this machine has no ITE RGB keyboard. The protocol is our own
+/// implementation of the controller (see [`legiontoolkit::rgb`]); this card is
+/// the UI over it.
 fn rgb_section() -> Option<LltCard> {
-    let model = system::lenovo_rgb_keyboard()?;
-    let installed = legiontoolkit::services::keyrgb::is_installed();
+    use legiontoolkit::rgb::{Effect, Keyboard};
+
+    if !Keyboard::available() {
+        return None;
+    }
+
+    /// The card's live selection.
+    struct Ui {
+        off: bool,
+        effect: Effect,
+        color: [u8; 3],
+        brightness: u32,
+        speed: u32,
+        forward: bool,
+    }
+
+    let state = Rc::new(RefCell::new(Ui {
+        off: false,
+        effect: Effect::Static,
+        color: [255, 32, 32],
+        brightness: 40,
+        speed: 5,
+        forward: true,
+    }));
 
     let card = LltCard::new();
     card.set_header(
         "keyboard-brightness-symbolic",
         "Keyboard RGB",
-        Some(&format!(
-            "This keyboard is {model} RGB. Colour and effects are driven over USB by \
-             keyRGB; this application controls on/off and brightness."
-        )),
+        Some("24-zone RGB. Set the colour and effect here."),
         &[],
     );
 
-    if installed {
-        let open = gtk4::Button::with_label("Open keyRGB");
-        open.add_css_class("suggested-action");
-        open.set_valign(Align::Center);
-        open.connect_clicked(|_| {
-            if let Err(e) = legiontoolkit::services::keyrgb::launch() {
-                tracing::warn!("could not launch keyRGB: {e}");
+    // --- Effect ---------------------------------------------------------
+    let effects = [
+        ("Off", None),
+        ("Static", Some(Effect::Static)),
+        ("Rainbow (spiral)", Some(Effect::ScrewRainbow)),
+        ("Rainbow wave", Some(Effect::RainbowWave)),
+        ("Colour change", Some(Effect::ColorChange)),
+        ("Colour pulse", Some(Effect::ColorPulse)),
+        ("Colour wave", Some(Effect::ColorWave)),
+        ("Smooth", Some(Effect::Smooth)),
+    ];
+    let names: Vec<&str> = effects.iter().map(|(label, _)| *label).collect();
+    let effect_dd = gtk4::DropDown::from_strings(&names);
+    effect_dd.set_selected(1);
+    effect_dd.set_valign(Align::Center);
+    effect_dd.set_size_request(200, -1);
+    effect_dd.connect_selected_notify({
+        let state = Rc::clone(&state);
+        move |dropdown| {
+            let selected = effects
+                .get(dropdown.selected() as usize)
+                .and_then(|(_, effect)| *effect);
+            let mut state = state.borrow_mut();
+            match selected {
+                Some(effect) => {
+                    state.off = false;
+                    state.effect = effect;
+                }
+                None => state.off = true,
             }
-        });
-        card.set_accessory(&open);
-    } else {
-        let note = Label::new(Some(
-            "Install keyRGB to control the colour: https://github.com/Rainexn0b/keyRGB",
-        ));
-        note.add_css_class("llt-card-note");
-        note.set_halign(Align::Start);
-        note.set_wrap(true);
-        card.append(&note);
+        }
+    });
+
+    // --- Colour ---------------------------------------------------------
+    let swatch = gtk4::Button::with_label(&hex(state.borrow().color));
+    swatch.set_valign(Align::Center);
+    swatch.connect_clicked({
+        let state = Rc::clone(&state);
+        let swatch = swatch.clone();
+        move |button| {
+            let dialog = gtk4::ColorDialog::new();
+            let parent = button.root().and_downcast::<gtk4::Window>();
+            let state = Rc::clone(&state);
+            let swatch = swatch.clone();
+            dialog.choose_rgba(
+                parent.as_ref(),
+                None::<&gtk4::gdk::RGBA>,
+                None::<&gtk4::gio::Cancellable>,
+                move |result| {
+                    if let Ok(rgba) = result {
+                        let rgb = [
+                            (rgba.red() * 255.0).round() as u8,
+                            (rgba.green() * 255.0).round() as u8,
+                            (rgba.blue() * 255.0).round() as u8,
+                        ];
+                        state.borrow_mut().color = rgb;
+                        swatch.set_label(&hex(rgb));
+                    }
+                },
+            );
+        }
+    });
+
+    // --- Brightness and speed ------------------------------------------
+    let brightness = gtk4::SpinButton::with_range(1.0, 50.0, 1.0);
+    brightness.set_value(40.0);
+    brightness.set_valign(Align::Center);
+    brightness.connect_value_changed({
+        let state = Rc::clone(&state);
+        move |spin| state.borrow_mut().brightness = spin.value() as u32
+    });
+
+    let speed = gtk4::SpinButton::with_range(0.0, 10.0, 1.0);
+    speed.set_value(5.0);
+    speed.set_valign(Align::Center);
+    speed.connect_value_changed({
+        let state = Rc::clone(&state);
+        move |spin| state.borrow_mut().speed = spin.value() as u32
+    });
+
+    // --- Rows -----------------------------------------------------------
+    let grid = gtk4::Grid::new();
+    grid.set_column_spacing(12);
+    grid.set_row_spacing(8);
+    for (index, (label, widget)) in [
+        ("Effect", effect_dd.clone().upcast::<gtk4::Widget>()),
+        ("Colour", swatch.clone().upcast::<gtk4::Widget>()),
+        ("Brightness", brightness.clone().upcast::<gtk4::Widget>()),
+        ("Speed", speed.clone().upcast::<gtk4::Widget>()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let name = Label::new(Some(label));
+        name.add_css_class("llt-card-title");
+        name.set_halign(Align::Start);
+        name.set_hexpand(true);
+        grid.attach(&name, 0, index as i32, 1, 1);
+        grid.attach(&widget, 1, index as i32, 1, 1);
     }
+    card.append(&grid);
+
+    // --- Actions --------------------------------------------------------
+    let apply = gtk4::Button::with_label("Apply");
+    apply.add_css_class("suggested-action");
+    let off = gtk4::Button::with_label("Turn off");
+    let actions = GtkBox::new(Orientation::Horizontal, 8);
+    actions.append(&off);
+    actions.append(&apply);
+    card.append(&actions);
+
+    let status = Label::new(None);
+    status.add_css_class("llt-card-note");
+    status.set_halign(Align::Start);
+    status.set_wrap(true);
+    card.append(&status);
+
+    apply.connect_clicked({
+        let state = Rc::clone(&state);
+        let status = status.clone();
+        move |_| {
+            let state = state.borrow();
+            let outcome = Keyboard::open().and_then(|keyboard| {
+                if state.off {
+                    keyboard.turn_off()
+                } else if state.effect == Effect::Static {
+                    keyboard.set_color(state.color, state.brightness)
+                } else {
+                    let color = state.effect.uses_color().then_some(state.color);
+                    keyboard.set_effect(
+                        state.effect,
+                        state.speed,
+                        color,
+                        state.forward,
+                        state.brightness,
+                    )
+                }
+            });
+            status.set_label(&match outcome {
+                Ok(()) => "Applied.".to_string(),
+                Err(e) => format!("{e}"),
+            });
+        }
+    });
+    off.connect_clicked({
+        let status = status.clone();
+        move |_| {
+            status.set_label(&match Keyboard::open().and_then(|k| k.turn_off()) {
+                Ok(()) => "Lighting off.".to_string(),
+                Err(e) => format!("{e}"),
+            });
+        }
+    });
 
     Some(card)
+}
+
+/// A colour as `#rrggbb`.
+fn hex(rgb: [u8; 3]) -> String {
+    format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])
 }
 
 // ---------------------------------------------------------------------------
