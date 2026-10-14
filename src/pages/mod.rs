@@ -1308,6 +1308,7 @@ fn settings_page(refresh_seconds: Rc<RefCell<u32>>) -> Page {
 #[allow(deprecated)] // gtk4::ColorButton is the swatch widget; still the simplest fit.
 fn rgb_section() -> Option<LltCard> {
     use legiontoolkit::rgb::{Effect, Keyboard};
+    use legiontoolkit::rgb_presets::RgbPresetStore;
 
     if !Keyboard::available() {
         return None;
@@ -1339,6 +1340,12 @@ fn rgb_section() -> Option<LltCard> {
         Some("24-zone RGB. Set the colour and effect here."),
         &[],
     );
+
+    // Presets sit at the top, as the reference lays them out. The buttons are
+    // built further down (they need the controls), but the row is placed here.
+    let preset_row = GtkBox::new(Orientation::Horizontal, 4);
+    preset_row.set_valign(Align::Center);
+    card.append(&preset_row);
 
     // --- Effect ---------------------------------------------------------
     let effects = [
@@ -1381,6 +1388,7 @@ fn rgb_section() -> Option<LltCard> {
     zone_grid.set_row_spacing(4);
     zone_grid.set_column_spacing(4);
     zone_grid.set_halign(Align::Start);
+    let mut swatches: Vec<gtk4::ColorButton> = Vec::new();
     for row in 0..legiontoolkit::rgb::NUM_ROWS {
         for col in 0..legiontoolkit::rgb::NUM_COLS {
             let index = row * legiontoolkit::rgb::NUM_COLS + col;
@@ -1399,6 +1407,7 @@ fn rgb_section() -> Option<LltCard> {
                 }
             });
             zone_grid.attach(&button, col as i32, row as i32, 1, 1);
+            swatches.push(button);
         }
     }
 
@@ -1441,25 +1450,18 @@ fn rgb_section() -> Option<LltCard> {
     }
     card.append(&grid);
 
-    // --- Actions --------------------------------------------------------
-    let apply = gtk4::Button::with_label("Apply");
-    apply.add_css_class("suggested-action");
-    let off = gtk4::Button::with_label("Turn off");
-    let actions = GtkBox::new(Orientation::Horizontal, 8);
-    actions.append(&off);
-    actions.append(&apply);
-    card.append(&actions);
-
+    // --- Actions, presets ----------------------------------------------
     let status = Label::new(None);
     status.add_css_class("llt-card-note");
     status.set_halign(Align::Start);
     status.set_wrap(true);
-    card.append(&status);
 
-    apply.connect_clicked({
+    // Push the current controls to the keyboard. Shared by Apply and by
+    // selecting a preset.
+    let apply_current: Rc<dyn Fn()> = {
         let state = Rc::clone(&state);
         let status = status.clone();
-        move |_| {
+        Rc::new(move || {
             let state = state.borrow();
             let outcome = Keyboard::open().and_then(|keyboard| {
                 if state.off {
@@ -1480,7 +1482,90 @@ fn rgb_section() -> Option<LltCard> {
                 Ok(()) => "Applied.".to_string(),
                 Err(e) => format!("{e}"),
             });
+        })
+    };
+
+    // Six numbered presets, as the reference lays them out. Selecting a slot
+    // loads it into the controls and applies it; Save writes the current look
+    // back into the selected slot.
+    let store = Rc::new(RefCell::new(RgbPresetStore::load()));
+    let mut group: Option<gtk4::ToggleButton> = None;
+    for index in 0..store.borrow().presets.len() {
+        let name = store.borrow().presets[index].name.clone();
+        let button = gtk4::ToggleButton::with_label(&name);
+        if let Some(previous) = &group {
+            button.set_group(Some(previous));
         }
+        button.set_active(index == store.borrow().active);
+        button.connect_toggled({
+            let store = Rc::clone(&store);
+            let state = Rc::clone(&state);
+            let effect_dd = effect_dd.clone();
+            let brightness = brightness.clone();
+            let speed = speed.clone();
+            let swatches = swatches.clone();
+            let apply_current = Rc::clone(&apply_current);
+            move |button| {
+                if !button.is_active() {
+                    return;
+                }
+                store.borrow_mut().active = index;
+                let _ = store.borrow().save();
+                let Some(preset) = store.borrow().active_preset().cloned() else {
+                    return;
+                };
+                let effect = preset.effect();
+                let zones = preset.zones();
+                {
+                    let mut state = state.borrow_mut();
+                    state.off = false;
+                    state.effect = effect;
+                    state.zones = zones;
+                    state.brightness = preset.brightness;
+                    state.speed = preset.speed;
+                }
+                effect_dd.set_selected(effect_index(effect));
+                brightness.set_value(preset.brightness as f64);
+                speed.set_value(preset.speed as f64);
+                for (slot, swatch) in swatches.iter().enumerate() {
+                    swatch.set_rgba(&to_rgba(zones[slot]));
+                }
+                apply_current();
+            }
+        });
+        preset_row.append(&button);
+        group = Some(button);
+    }
+
+    let save = gtk4::Button::with_label("Save preset");
+    save.connect_clicked({
+        let store = Rc::clone(&store);
+        let state = Rc::clone(&state);
+        let status = status.clone();
+        move |_| {
+            let state = state.borrow();
+            store
+                .borrow_mut()
+                .capture(state.effect, state.zones, state.brightness, state.speed);
+            let _ = store.borrow().save();
+            status.set_label("Saved.");
+        }
+    });
+    preset_row.append(&save);
+    card.append(&preset_row);
+
+    let apply = gtk4::Button::with_label("Apply");
+    apply.add_css_class("suggested-action");
+    let off = gtk4::Button::with_label("Turn off");
+    let actions = GtkBox::new(Orientation::Horizontal, 8);
+    actions.append(&off);
+    actions.append(&apply);
+    card.append(&actions);
+    card.append(&status);
+
+    apply.connect_clicked({
+        let apply_current = Rc::clone(&apply_current);
+        move |_| apply_current()
     });
     off.connect_clicked({
         let status = status.clone();
@@ -1493,6 +1578,20 @@ fn rgb_section() -> Option<LltCard> {
     });
 
     Some(card)
+}
+
+/// The effect dropdown index for an effect (`0` is Off).
+fn effect_index(effect: legiontoolkit::rgb::Effect) -> u32 {
+    use legiontoolkit::rgb::Effect;
+    match effect {
+        Effect::Static => 1,
+        Effect::ScrewRainbow => 2,
+        Effect::RainbowWave => 3,
+        Effect::ColorChange => 4,
+        Effect::ColorPulse => 5,
+        Effect::ColorWave => 6,
+        Effect::Smooth => 7,
+    }
 }
 
 /// A colour as a GTK RGBA.

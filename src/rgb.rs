@@ -96,6 +96,24 @@ impl Effect {
         }
     }
 
+    /// A stable name, for persistence.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Static => "static",
+            Self::ScrewRainbow => "screw_rainbow",
+            Self::RainbowWave => "rainbow_wave",
+            Self::ColorChange => "color_change",
+            Self::ColorPulse => "color_pulse",
+            Self::ColorWave => "color_wave",
+            Self::Smooth => "smooth",
+        }
+    }
+
+    /// Rebuild an effect from its stored name.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|e| e.name() == name)
+    }
+
     /// Whether the effect uses the chosen colour, or runs through its own.
     pub fn uses_color(self) -> bool {
         matches!(
