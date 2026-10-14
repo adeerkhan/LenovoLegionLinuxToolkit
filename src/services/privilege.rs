@@ -42,17 +42,12 @@ fn which(bin: &str) -> bool {
         .unwrap_or(false)
 }
 
-#[cfg(unix)]
+/// This crate targets Linux, so there is no non-unix case to handle.
 fn is_executable(path: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path)
         .map(|m| m.permissions().mode() & 0o111 != 0)
         .unwrap_or(false)
-}
-
-#[cfg(not(unix))]
-fn is_executable(_: &std::path::Path) -> bool {
-    true
 }
 
 /// Escalate a single write.
@@ -68,18 +63,116 @@ pub fn request(key: &str, value: &str) -> anyhow::Result<()> {
         ));
     }
 
-    let status = Command::new("pkexec")
+    // The output is captured rather than inherited, and this matters more than
+    // it looks. A GUI launched from the desktop has no terminal, so an
+    // inherited stderr goes nowhere and the user sees only "it didn't work".
+    // pkexec's own diagnostics — no polkit agent, not authorised, action not
+    // found — are the whole explanation when a password prompt succeeds but the
+    // write still fails.
+    let output = Command::new("pkexec")
         .arg(HELPER_PATH)
         .arg("set")
         .arg(key)
         .arg(value)
-        .status()?;
+        .output()?;
 
-    if status.success() {
-        Ok(())
-    } else {
-        Err(anyhow::anyhow!(
-            "the helper refused to write {key} (exit {status})"
-        ))
+    if output.status.success() {
+        return Ok(());
     }
+
+    Err(anyhow::anyhow!("{}", explain(key, &output)))
+}
+
+/// Turn a failed `pkexec` run into something a user can act on.
+fn explain(key: &str, output: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = stderr.trim();
+    let detail = if stderr.is_empty() {
+        String::new()
+    } else {
+        format!(" — {stderr}")
+    };
+
+    // pkexec's own exit codes mean specific things, and each needs a different
+    // action from the user.
+    let code = output.status.code();
+    let lead = match code {
+        Some(126) => {
+            "Authentication failed or was dismissed, or no polkit agent is running in this session"
+                .to_string()
+        }
+        Some(127) => format!(
+            "pkexec could not run the helper. Is it installed at {HELPER_PATH} and is a polkit \
+             action declaring that exact path present in /usr/share/polkit-1/actions or \
+             /usr/local/share/polkit-1/actions?"
+        ),
+        // The helper's own codes, from its source.
+        Some(64) => "the helper was called incorrectly".to_string(),
+        Some(65) => "the helper rejected the value as implausible".to_string(),
+        Some(68) => format!("this machine has no backing file for {key:?}"),
+        Some(69) => "the backing file disappeared before it could be written".to_string(),
+        Some(74) => format!("the file exists but could not be written for {key:?}"),
+        Some(77) => format!("the helper refused {key:?} — not an allowed capability").to_string(),
+        Some(other) => format!("pkexec exited {other}"),
+        None => "pkexec was killed by a signal".to_string(),
+    };
+
+    format!("{lead}{detail}")
+}
+
+/// What is wrong with the escalation wiring, if anything.
+///
+/// Returned rather than logged so the caller can put it in front of the user:
+/// this class of failure is invisible otherwise, and every cause has a
+/// different fix.
+pub fn diagnose() -> Vec<String> {
+    let mut findings = Vec::new();
+
+    let helper = std::path::Path::new(HELPER_PATH);
+    if !helper.exists() {
+        findings.push(format!(
+            "the helper is not installed at {HELPER_PATH} (run `sudo make install`, then \
+             relaunch the installed binary rather than ./target/release)"
+        ));
+    } else if !is_executable(helper) {
+        findings.push(format!("{HELPER_PATH} is not executable"));
+    }
+
+    if !which("pkexec") {
+        findings.push("`pkexec` is not on PATH (install polkit)".to_string());
+    }
+
+    // The action must declare this exact path, and polkit only reads a couple of
+    // fixed directories.
+    let policy_hint =
+        format!("<annotate key=\"org.freedesktop.policykit.exec.path\">{HELPER_PATH}</annotate>");
+    let dirs = [
+        "/usr/share/polkit-1/actions",
+        "/usr/local/share/polkit-1/actions",
+        "/etc/polkit-1/actions",
+    ];
+    let mut found_policy = false;
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(text) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            if text.contains(&policy_hint) {
+                found_policy = true;
+                break;
+            }
+        }
+    }
+    if !found_policy {
+        findings.push(format!(
+            "no polkit action in {} declares exec.path {HELPER_PATH}. pkexec will not \
+             authorise the helper without it",
+            dirs.join(", ")
+        ));
+    }
+
+    findings
 }

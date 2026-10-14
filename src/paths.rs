@@ -120,15 +120,10 @@ pub fn discover() -> SysPaths {
 
 impl SysPaths {
     /// First existing path among the candidates, for a key that can live in
-    /// more than one place (touchpad does: ideapad *or* legion).
+    /// more than one place. The touchpad is the real case: `ideapad_acpi`
+    /// exposes it on some boards and the legion driver on others.
     pub fn first_existing(&self, candidates: &[Option<PathBuf>]) -> Option<PathBuf> {
         candidates.iter().flatten().find(|p| p.exists()).cloned()
-    }
-
-    /// True when a path both resolves and currently exists on disk. This is the
-    /// Rust equivalent of LenovoLegionLinux's `Feature.exists()`.
-    pub fn has(&self, key: &str) -> bool {
-        self.file(key).map(|p| p.exists()).unwrap_or(false)
     }
 
     /// Map a stable capability key onto its backing file, if the key is known
@@ -139,23 +134,27 @@ impl SysPaths {
 
         let path = match key {
             // --- power mode -------------------------------------------------
-            "platform_profile" => std::fs::read_dir(self.legion.as_ref()?.join("platform-profile"))
-                .ok()?
-                .flatten()
-                .find(|e| e.path().join("profile").exists())
-                .map(|e| e.path().join("profile"))?,
+            // `powermode` is the capability key the UI and the privilege
+            // allowlist use; `platform_profile` is what the kernel calls it.
+            // They were never matched up, so the flagship control read as
+            // unavailable even when the file was present.
+            "powermode" | "platform_profile" => platform_profile()?,
 
             // --- fans -------------------------------------------------------
+            // Resolved by sweeping hwmon rather than assuming the legion device
+            // owns them, so they report even with the out-of-tree module absent.
+            "fan1_rpm" => fan_path(1, self.hwmon.as_deref())?,
+            "fan2_rpm" => fan_path(2, self.hwmon.as_deref())?,
+            "fan3_rpm" => fan_path(3, self.hwmon.as_deref())?,
+            "fan4_rpm" => fan_path(4, self.hwmon.as_deref())?,
             "fan_fullspeed" => legion("fan_fullspeed")?,
 
             // --- hwmon sensors ----------------------------------------------
+            // Only the legion module's own CPU and chipset channels are read by
+            // name here; CPU temperature additionally falls back to coretemp,
+            // the fans are swept from hwmon, and the GPU comes from nvidia-smi.
             "cpu_temp" => self.hwmon.as_ref().map(|h| h.join("temp1_input"))?,
-            "gpu_temp" => self.hwmon.as_ref().map(|h| h.join("temp2_input"))?,
             "ic_temp" => self.hwmon.as_ref().map(|h| h.join("temp3_input"))?,
-            "fan1_rpm" => self.hwmon.as_ref().map(|h| h.join("fan1_input"))?,
-            "fan2_rpm" => self.hwmon.as_ref().map(|h| h.join("fan2_input"))?,
-            "fan3_rpm" => self.hwmon.as_ref().map(|h| h.join("fan3_input"))?,
-            "fan4_rpm" => self.hwmon.as_ref().map(|h| h.join("fan4_input"))?,
 
             // --- ideapad toggles (NOT under the legion tree) ----------------
             "battery_conservation" => ideapad("conservation_mode")?,
@@ -176,6 +175,46 @@ impl SysPaths {
     }
 }
 
+/// The platform-profile control, preferring the standard ACPI interface.
+///
+/// `/sys/firmware/acpi/platform_profile` has been the standard way to read and
+/// set the power mode for years, and the kernel's own in-tree drivers populate
+/// it. Reading only the legion module's copy reported "unsupported" on every
+/// machine without the out-of-tree module loaded — including this one, where
+/// the ACPI file is present and the module is not.
+pub fn platform_profile() -> Option<PathBuf> {
+    const STANDARD: &str = "/sys/firmware/acpi/platform_profile";
+    if Path::new(STANDARD).exists() {
+        return Some(PathBuf::from(STANDARD));
+    }
+
+    // Fallback: the legion module's layout, one directory per profile handler.
+    let base = Path::new("/sys/module/legion_laptop/drivers/platform:legion");
+    let candidates = [base.join("legion"), base.join("PNP0C09:00")];
+    candidates.into_iter().find_map(|dir| {
+        std::fs::read_dir(dir.join("platform-profile"))
+            .ok()?
+            .flatten()
+            .map(|e| e.path().join("profile"))
+            .find(|p| p.exists())
+    })
+}
+
+/// The list of platform-profile choices.
+///
+/// Its name differs between the two interfaces — `platform_profile_choices`
+/// beside the ACPI file, `choices` beside the legion one — so it cannot be
+/// found by looking for a sibling named `choices`.
+pub fn platform_profile_choices() -> Option<PathBuf> {
+    const STANDARD: &str = "/sys/firmware/acpi/platform_profile_choices";
+    if Path::new(STANDARD).exists() {
+        return Some(PathBuf::from(STANDARD));
+    }
+    let profile = platform_profile()?;
+    let sibling = profile.parent()?.join("choices");
+    sibling.exists().then_some(sibling)
+}
+
 /// The `leds` class renames the keyboard backlight to `kbd_backlight_1` when a
 /// name collision with another driver is detected, so it must be globbed.
 fn leds_path(function: &str) -> Option<PathBuf> {
@@ -185,25 +224,6 @@ fn leds_path(function: &str) -> Option<PathBuf> {
         (name == format!("platform::{function}") || name == format!("platform::{function}_1"))
             .then(|| e.path().join("brightness"))
     })
-}
-
-/// Find a battery attribute file, following the `power_supply` class rather
-/// than assuming `BAT0`. Some boards have several USB-C PD sources that also
-/// look like batteries; the real one reports a non-zero `present`.
-pub fn find_battery_file(attr: &str) -> Option<PathBuf> {
-    std::fs::read_dir("/sys/class/power_supply")
-        .ok()?
-        .flatten()
-        .filter_map(|e| {
-            let dir = e.path();
-            let is_battery = std::fs::read_to_string(dir.join("type")).ok()?.trim() == "Battery";
-            let present = std::fs::read_to_string(dir.join("present"))
-                .ok()
-                .map(|s| s.trim() == "1")
-                .unwrap_or(true);
-            (is_battery && present).then(|| dir.join(attr))
-        })
-        .find(|p| p.exists())
 }
 
 /// Find an hwmon directory by its `name` file — `coretemp`, `nvme`, and so on.
@@ -320,4 +340,60 @@ pub fn battery_time_hours() -> Option<(f64, bool)> {
     };
 
     Some((energy / rate, charging))
+}
+
+/// Every hwmon directory, with its device `name`.
+///
+/// The kernel exposes sensors through `/sys/class/hwmon/*` regardless of which
+/// driver owns them, and the directory names are not stable across boots. The
+/// only reliable way to find a sensor is to sweep them all and read each
+/// device's `name` — which is what Vitals does, and the reason it finds fans on
+/// machines where a driver-specific lookup finds none.
+pub fn hwmon_devices() -> Vec<(String, PathBuf)> {
+    std::fs::read_dir("/sys/class/hwmon")
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|entry| {
+            let path = entry.path();
+            let name = std::fs::read_to_string(path.join("name")).ok()?;
+            Some((name.trim().to_string(), path))
+        })
+        .collect()
+}
+
+/// The path for fan `index` (1-based), preferring the most specific source.
+///
+/// Order matters: the legion module's own sensor is the most accurate where it
+/// exists, then the in-tree `lenovo_wmi_other` driver — which on this machine
+/// already reports both fans at 4000 RPM — then any hwmon device that happens
+/// to expose the channel.
+pub fn fan_path(index: u32, legion_hwmon: Option<&Path>) -> Option<PathBuf> {
+    let attribute = format!("fan{index}_input");
+
+    // 1. The out-of-tree module's own hwmon.
+    if let Some(hwmon) = legion_hwmon {
+        let candidate = hwmon.join(&attribute);
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    // 2. In-tree Lenovo WMI sensors.
+    for (name, path) in hwmon_devices() {
+        if name.starts_with("lenovo_wmi") {
+            let candidate = path.join(&attribute);
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    // 3. Any other device exposing the channel.
+    let mut devices = hwmon_devices();
+    devices.sort_by(|a, b| a.0.cmp(&b.0));
+    devices
+        .into_iter()
+        .map(|(_, path)| path.join(&attribute))
+        .find(|candidate| candidate.exists())
 }

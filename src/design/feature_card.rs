@@ -16,6 +16,8 @@
 //! comes back through a channel — otherwise the window freezes for the duration
 //! of the prompt, which looks exactly like a crash.
 
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use adw::prelude::*;
@@ -29,6 +31,15 @@ use legiontoolkit::capability::{Capability, Kind, Limits, Value};
 pub struct FeatureCard {
     card: LltCard,
     capability: Option<Arc<Capability>>,
+    /// True while `refresh` is writing values into the controls.
+    ///
+    /// Setting a `SpinButton` or `DropDown` fires the same `changed` signal a
+    /// user interaction does, so without this every refresh looked like an edit.
+    /// The earlier guard compared the widget's value against the capability's
+    /// and skipped if equal — which is unreliable for floats: a spin button
+    /// rounding 55.0 to 54.999 read as a change and issued a write. The
+    /// reference guards the same way, with an `IsRefreshing` field.
+    updating: Rc<Cell<bool>>,
     value_label: Option<Label>,
     meter: Option<(ProgressBar, f64, f64)>,
     toggle: Option<Switch>,
@@ -37,7 +48,7 @@ pub struct FeatureCard {
 }
 
 impl FeatureCard {
-    pub fn new(cap: Capability) -> Self {
+    pub fn new(cap: Arc<Capability>) -> Self {
         let card = LltCard::new();
 
         // The reference's card anatomy: icon, title, subtitle, then any status
@@ -62,10 +73,11 @@ impl FeatureCard {
             }));
         }
 
-        card.set_header(cap.icon, &cap.label, cap.note, &status);
+        card.set_header(cap.icon, &cap.label, cap.note.as_deref(), &status);
 
         let mut this = Self {
             card,
+            updating: Rc::new(Cell::new(false)),
             value_label: None,
             meter: None,
             toggle: None,
@@ -89,7 +101,7 @@ impl FeatureCard {
             Kind::Custom => this.show_unavailable("Not yet implemented"),
         }
 
-        this.capability = Some(Arc::new(cap));
+        this.capability = Some(cap);
         this
     }
 
@@ -186,21 +198,18 @@ impl FeatureCard {
         };
 
         if let Some(sw) = &self.toggle {
-            let active_now = cap.read().map(|v| matches!(v, Value::Bool(true)));
             let cap = Arc::clone(&cap);
             let parent = parent.clone();
             let card = self.card.clone();
 
+            let updating = Rc::clone(&self.updating);
             sw.connect_state_set(move |sw, _| {
-                // `connect_state_set` fires for programmatic changes too, so
-                // compare against what the hardware said before deciding this
-                // was a user action.
-                let current = active_now.as_ref().map(|b| *b).unwrap_or(false);
-                let requested = sw.is_active();
-
-                if requested == current {
+                // A programmatic set fires this too; only a user gesture should
+                // reach the write path.
+                if updating.get() {
                     return glib::Propagation::Proceed;
                 }
+                let requested = sw.is_active();
 
                 confirm_and_write(&parent, &card, &cap, Value::Bool(requested));
                 glib::Propagation::Proceed
@@ -214,17 +223,15 @@ impl FeatureCard {
             let values = values.clone();
             let dd_weak = dd.clone();
 
+            let updating = Rc::clone(&self.updating);
             dd.connect_selected_notify(move |dd| {
+                if updating.get() {
+                    return;
+                }
                 let idx = dd.selected() as usize;
                 let Some(value) = values.get(idx).cloned() else {
                     return;
                 };
-                // Ignore the programmatic selection that `refresh` performs.
-                if let Ok(Value::Text(current)) = cap.read() {
-                    if current == value {
-                        return;
-                    }
-                }
                 confirm_and_write(&parent, &card, &cap, Value::Text(value));
                 let _ = dd_weak.clone();
             });
@@ -235,14 +242,12 @@ impl FeatureCard {
             let parent = parent.clone();
             let card = self.card.clone();
 
+            let updating = Rc::clone(&self.updating);
             spin.connect_value_changed(move |spin| {
-                let requested = Value::Float(spin.value());
-                if let Ok(current) = cap.read() {
-                    if current == requested {
-                        return;
-                    }
+                if updating.get() {
+                    return;
                 }
-                confirm_and_write(&parent, &card, &cap, requested);
+                confirm_and_write(&parent, &card, &cap, Value::Float(spin.value()));
             });
         }
     }
@@ -257,6 +262,10 @@ impl FeatureCard {
             Some(c) => c,
             None => return,
         };
+        self.updating.set(true);
+        // Cleared on every exit path, so a panic in a widget setter cannot leave
+        // the card permanently deaf to the user.
+        let _guard = UpdateGuard(&self.updating);
 
         let Ok(value) = cap.read() else {
             if let Some(label) = &self.value_label {
@@ -269,16 +278,14 @@ impl FeatureCard {
 
         // A temperature is converted for display only; the capability keeps
         // reporting Celsius, which is what the hardware gives.
-        let value = match &value {
+        // One lookup: `for_display` returns both the converted value and the
+        // unit it converted to.
+        let (value, unit) = match &value {
             Value::Float(f) if !unit.is_empty() => {
-                Value::Float(legiontoolkit::settings::for_display(*f, unit).0)
+                let (converted, unit) = legiontoolkit::settings::for_display(*f, unit);
+                (Value::Float(converted), unit)
             }
-            other => other.clone(),
-        };
-        let unit = if cap.unit.is_some() {
-            legiontoolkit::settings::for_display(0.0, unit).1
-        } else {
-            unit
+            other => (other.clone(), unit),
         };
 
         if let Some(label) = &self.value_label {
@@ -418,4 +425,13 @@ fn submit_write(card: &LltCard, cap: &Arc<Capability>, value: Value) {
             None => glib::ControlFlow::Continue,
         }
     });
+}
+
+/// Clears an `updating` flag when dropped.
+struct UpdateGuard<'a>(&'a std::cell::Cell<bool>);
+
+impl Drop for UpdateGuard<'_> {
+    fn drop(&mut self) {
+        self.0.set(false);
+    }
 }

@@ -15,6 +15,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gtk4::prelude::*;
 use gtk4::{Align, Box as GtkBox, FlowBox, Label, Orientation, ScrolledWindow};
@@ -22,8 +23,9 @@ use gtk4::{Align, Box as GtkBox, FlowBox, Label, Orientation, ScrolledWindow};
 use legiontoolkit::backends::{driver_status, Backend};
 use legiontoolkit::capability::{Capability, Value};
 use legiontoolkit::paths;
+use legiontoolkit::system;
 
-use crate::design::card::LltCard;
+use crate::design::card::{LltCard, Severity};
 use crate::design::{FeatureCard, SensorCard};
 
 /// A scrolled page whose contents are rebuilt on refresh.
@@ -92,6 +94,11 @@ impl Page {
         self.append(&label);
     }
 
+    /// A page with no contents, for a slot that will be filled by `rebuild`.
+    fn empty() -> Self {
+        Self::new(|_| {})
+    }
+
     /// A large section heading, matching the reference's 24px group titles.
     fn heading(&mut self, text: &str) {
         let label = Label::new(Some(text));
@@ -106,42 +113,127 @@ impl Page {
 }
 
 /// A page whose contents come from a set of capabilities, refreshed on a timer.
+/// A section drawn around the capability cards, for content the capability
+/// model does not describe — the presets editor is the only one so far.
+type ExtraSection = Box<dyn Fn(&mut Page, &Rc<RefCell<Vec<Arc<Capability>>>>) + 'static>;
+
+/// The landing page's sensor cards, shared between the page builder and the
+/// refresh loop. Named because the nested form is unreadable inline.
+type ThermalGrid = Rc<RefCell<Option<Rc<ThermalCards>>>>;
+
 pub struct CapabilityPage {
     page: Page,
     cards: Rc<RefCell<Vec<FeatureCard>>>,
+    /// The same list `Pages` holds, so an extra section can read and write
+    /// capabilities without its own discovery pass.
+    caps: Rc<RefCell<Vec<Arc<Capability>>>>,
+    prelude: Option<ExtraSection>,
+    extra: Option<ExtraSection>,
 }
 
 impl CapabilityPage {
-    fn new(build: impl Fn(&mut Page) + 'static) -> Self {
+    fn new(build: impl Fn(&mut Page) + 'static, caps: Rc<RefCell<Vec<Arc<Capability>>>>) -> Self {
         Self {
             page: Page::new(build),
             cards: Rc::new(RefCell::new(Vec::new())),
+            caps,
+            prelude: None,
+            extra: None,
         }
     }
 
+    /// Add a section drawn *before* the capability cards.
+    ///
+    /// The landing page needs this: the reference puts its sensor grid above
+    /// the controls, not below them.
+    fn with_prelude(
+        mut self,
+        prelude: impl Fn(&mut Page, &Rc<RefCell<Vec<Arc<Capability>>>>) + 'static,
+    ) -> Self {
+        self.prelude = Some(Box::new(prelude));
+        self
+    }
+
+    /// Add a section drawn after the capability cards.
+    fn with_extra(
+        mut self,
+        extra: impl Fn(&mut Page, &Rc<RefCell<Vec<Arc<Capability>>>>) + 'static,
+    ) -> Self {
+        self.extra = Some(Box::new(extra));
+        self
+    }
+
     /// Re-render from the backend. Called on every refresh tick.
-    fn rebuild(&mut self, backend: &dyn Backend, filter: impl Fn(&Capability) -> bool) {
-        self.page.clear();
+    /// Re-render from the shared capability list.
+    ///
+    /// The list is shared rather than re-derived so that a section drawn beside
+    /// the cards — the presets editor — can read and write the same
+    /// capabilities the cards control.
+    fn rebuild(&mut self, filter: impl Fn(&Capability) -> bool) {
+        // `render` clears as well, so this is one pass, not two.
         self.page.render();
 
+        if let Some(prelude) = &self.prelude {
+            prelude(&mut self.page, &self.caps);
+        }
+
         self.cards.borrow_mut().clear();
-        let capabilities: Vec<Capability> = backend
-            .capabilities()
-            .into_iter()
-            .filter(|c| filter(c))
+        let capabilities: Vec<Arc<Capability>> = self
+            .caps
+            .borrow()
+            .iter()
+            .filter(|cap| filter(cap))
+            .cloned()
             .collect();
 
-        for cap in capabilities {
-            if matches!(cap.kind, legiontoolkit::capability::Kind::ReadOnly) && !cap.is_available()
-            {
-                // A read-only sensor that is unavailable is already explained
-                // on the dashboard; repeating it here adds noise.
+        // A page shows the controls this machine actually has. The reference
+        // hides unsupported controls entirely, and the reason is now obvious:
+        // with thirteen permanently-unavailable capabilities, listing them all
+        // buries the ones that work. What is missing is stated once, at the
+        // bottom, and enumerated in full on the About page.
+        let mut unavailable: Vec<&Arc<Capability>> = Vec::new();
+        for cap in &capabilities {
+            if !cap.is_available() {
+                unavailable.push(cap);
                 continue;
             }
-            let card = FeatureCard::new(cap);
+            let card = FeatureCard::new(Arc::clone(cap));
             self.page.append(card.gtk_widget());
             card.connect_controls(self.page.contents.clone().upcast::<gtk4::Widget>());
             self.cards.borrow_mut().push(card);
+        }
+
+        if !unavailable.is_empty() {
+            let reasons: std::collections::BTreeSet<&str> = unavailable
+                .iter()
+                .filter_map(|c| c.unavailable_reason)
+                .collect();
+            let note = Label::new(Some(&format!(
+                "{} control{} unavailable on this machine ({}) — see About for the full list.",
+                unavailable.len(),
+                if unavailable.len() == 1 {
+                    " is"
+                } else {
+                    "s are"
+                },
+                reasons.into_iter().collect::<Vec<_>>().join("; ")
+            )));
+            note.add_css_class("llt-page-footnote");
+            note.set_halign(Align::Start);
+            note.set_wrap(true);
+            self.page.append(&note);
+        }
+
+        // A page with nothing on it should say so rather than look broken.
+        if self.cards.borrow().is_empty() && unavailable.is_empty() {
+            let note = Label::new(Some("Nothing to show in this section."));
+            note.add_css_class("llt-page-footnote");
+            note.set_halign(Align::Start);
+            self.page.append(&note);
+        }
+
+        if let Some(extra) = &self.extra {
+            extra(&mut self.page, &self.caps);
         }
 
         // Warm the values immediately so the page is not blank for a second.
@@ -150,7 +242,11 @@ impl CapabilityPage {
         }
     }
 
-    fn refresh(&self) {
+    /// Re-read the cards, but only while the page is on screen.
+    fn refresh_if_mapped(&self) {
+        if !self.page.widget().is_mapped() {
+            return;
+        }
         for card in self.cards.borrow().iter() {
             card.refresh();
         }
@@ -163,9 +259,11 @@ impl CapabilityPage {
 
 /// All pages, so the refresh loop can drive them from one place.
 pub struct Pages {
-    pub thermal: Page,
+    /// The landing page: readings and controls together.
+    pub home: CapabilityPage,
     pub battery: BatteryPage,
     pub power: CapabilityPage,
+    pub processors: CapabilityPage,
     pub lighting: CapabilityPage,
     pub system: CapabilityPage,
     pub about: Page,
@@ -173,60 +271,99 @@ pub struct Pages {
     /// The refresh interval in seconds, shared with the Settings control so a
     /// change takes effect without a restart.
     pub refresh_seconds: Rc<RefCell<u32>>,
+    landing_grid: ThermalGrid,
     /// The capability set, held once and shared by every page and the thermal
     /// grid. `Capability` is deliberately not cloneable — it owns its read and
     /// write closures — so pages share it through this rather than copying it.
-    caps: Rc<RefCell<Vec<Capability>>>,
-    /// The sensor cards on the thermal page, refreshed directly because their
-    /// values come from sources the capability model does not describe one row
-    /// per file (coretemp and nvme).
-    thermal_cards: Rc<RefCell<Option<Rc<ThermalCards>>>>,
+    caps: Rc<RefCell<Vec<Arc<Capability>>>>,
 }
 
 impl Pages {
     pub fn new() -> Self {
+        let caps: Rc<RefCell<Vec<Arc<Capability>>>> = Rc::new(RefCell::new(Vec::new()));
+        let landing_grid: ThermalGrid = Rc::new(RefCell::new(None));
         Self {
-            thermal: thermal_page(&Rc::new(RefCell::new(None))),
+            landing_grid: Rc::clone(&landing_grid),
+            // The landing page leads with the sensor grid and then shows every
+            // group, which is the reference's dashboard layout. The grid's cards
+            // are registered into `thermal_cards` so the refresh loop reaches
+            // them without knowing which page they are on.
+            home: CapabilityPage::new(
+                |page| {
+                    page.heading("Home");
+                },
+                Rc::clone(&caps),
+            )
+            .with_prelude({
+                let out = Rc::clone(&landing_grid);
+                move |page, _caps| append_sensor_grid(page, &out)
+            }),
             battery: BatteryPage::new(),
-            power: CapabilityPage::new(|page| {
-                page.heading("Power");
+            power: CapabilityPage::new(
+                |page| {
+                    page.heading("Power");
+                },
+                Rc::clone(&caps),
+            )
+            .with_extra(|page, caps| {
+                // The presets editor belongs on the Power page, next to the
+                // limits it stores.
+                let card = presets_section(Rc::clone(caps));
+                page.append(card.widget());
             }),
-            lighting: CapabilityPage::new(|page| {
-                page.heading("Lighting");
-            }),
-            system: CapabilityPage::new(|page| {
-                page.heading("System");
-            }),
+            processors: CapabilityPage::new(
+                |page| {
+                    page.heading("Processors & GPU");
+                },
+                Rc::clone(&caps),
+            ),
+            lighting: CapabilityPage::new(
+                |page| {
+                    page.heading("Lighting");
+                },
+                Rc::clone(&caps),
+            ),
+            system: CapabilityPage::new(
+                |page| {
+                    page.heading("System");
+                },
+                Rc::clone(&caps),
+            ),
             about: about_page(),
-            settings: settings_page(Rc::new(RefCell::new(
-                legiontoolkit::settings::current().refresh_interval_secs,
-            ))),
+            // Built once, in `rebuild`, like every other page. Constructing it
+            // here as well built and discarded a full widget tree.
+            settings: Page::empty(),
             refresh_seconds: Rc::new(RefCell::new(
                 legiontoolkit::settings::current().refresh_interval_secs,
             )),
-            caps: Rc::new(RefCell::new(Vec::new())),
-            thermal_cards: Rc::new(RefCell::new(None)),
+            caps,
         }
     }
 
     /// Rebuild every page from the backend.
     pub fn rebuild(&mut self, backend: &dyn Backend) {
-        *self.caps.borrow_mut() = backend.capabilities();
+        *self.caps.borrow_mut() = backend.capabilities().into_iter().map(Arc::new).collect();
         self.settings = settings_page(Rc::clone(&self.refresh_seconds));
-        self.thermal = thermal_page(&self.thermal_cards);
         self.battery.rebuild(backend);
 
-        self.power.rebuild(backend, |c| {
-            c.group == legiontoolkit::capability::Group::Power
-        });
-        self.lighting.rebuild(backend, |c| {
-            c.group == legiontoolkit::capability::Group::Lighting
-        });
-        self.system.rebuild(backend, |c| {
-            c.group == legiontoolkit::capability::Group::System
-        });
+        // The landing page shows every group, sensors first.
+        self.home.rebuild(|_| true);
+        self.power
+            .rebuild(|c| c.group == legiontoolkit::capability::Group::Power);
+        self.processors
+            .rebuild(|c| c.group == legiontoolkit::capability::Group::Processors);
+        self.lighting
+            .rebuild(|c| c.group == legiontoolkit::capability::Group::Lighting);
+        self.system
+            .rebuild(|c| c.group == legiontoolkit::capability::Group::System);
 
-        self.about = about_page_with(backend);
+        self.about = about_page_with(backend, &self.caps.borrow().clone());
+
+        // Warm the sensor grid once, here rather than in the tick. The tick only
+        // refreshes a page that is mapped, and at startup nothing is mapped yet
+        // — so gating the warm-up on visibility left the landing page showing
+        // dashes until the first second had passed.
+        refresh_thermal(&self.caps, &self.landing_grid);
     }
 
     /// The configured refresh interval, in seconds.
@@ -234,19 +371,33 @@ impl Pages {
         *self.refresh_seconds.borrow()
     }
 
-    /// Tick every live value.
+    /// Tick the values on the page that is actually on screen.
+    ///
+    /// Every capability read is a file open, a read and a parse, and the
+    /// application has around fifty of them across eight pages. Refreshing all
+    /// eight every second did all of that work for seven pages nobody was
+    /// looking at — including five GPU cache locks — which is exactly the kind
+    /// of background churn that costs a laptop its battery.
+    ///
+    /// A page that is not the stack's visible child is not mapped, so that is
+    /// the test.
     pub fn refresh(&self) {
-        self.battery.refresh();
-        self.power.refresh();
-        self.lighting.refresh();
-        self.system.refresh();
-        refresh_thermal(&self.caps, &self.thermal_cards);
+        self.home.refresh_if_mapped();
+        self.battery.refresh_if_mapped();
+        self.power.refresh_if_mapped();
+        self.processors.refresh_if_mapped();
+        self.lighting.refresh_if_mapped();
+        self.system.refresh_if_mapped();
+        if self.home.widget().is_mapped() {
+            refresh_thermal(&self.caps, &self.landing_grid);
+        }
     }
 
     pub fn stack_pages(&self) -> Vec<(&'static str, &ScrolledWindow, &'static str)> {
         vec![
-            ("thermal", self.thermal.widget(), "Thermal"),
+            ("home", self.home.widget(), "Home"),
             ("power", self.power.widget(), "Power"),
+            ("processors", self.processors.widget(), "Processors & GPU"),
             ("lighting", self.lighting.widget(), "Lighting"),
             ("battery", self.battery.widget(), "Battery"),
             ("system", self.system.widget(), "System"),
@@ -280,16 +431,15 @@ struct ThermalCards {
     disk_rows: Vec<(usize, &'static str)>,
 }
 
-/// Build the thermal page.
+/// Append the sensor grid to a page and register its cards for refreshing.
 ///
 /// Every row starts blank and is filled from whichever source actually has the
 /// reading, exactly as the reference's sensor controller hides cards for
-/// sensors a machine does not have.
-fn thermal_page(out: &Rc<RefCell<Option<Rc<ThermalCards>>>>) -> Page {
+/// sensors a machine does not have. Reusable because the reference puts this
+/// grid at the top of its landing page, and so do we.
+fn append_sensor_grid(page: &mut Page, out: &ThermalGrid) {
     let out = Rc::clone(out);
-    Page::new(move |page| {
-        page.heading("Thermal");
-
+    {
         let grid = FlowBox::new();
         grid.add_css_class("llt-sensor-grid");
         grid.set_selection_mode(gtk4::SelectionMode::None);
@@ -303,31 +453,52 @@ fn thermal_page(out: &Rc<RefCell<Option<Rc<ThermalCards>>>>) -> Page {
         let mut cpu = SensorCard::new("CPU");
         let cpu_rows = vec![
             (cpu.add_row("Utilization", "%", 0, 100.0), "cpu_utilization"),
-            (cpu.add_row("Core Clock", "MHz", 0, 5000.0), "cpu_clock"),
+            // The meter ceiling is the CPU's own rated maximum, so the bar
+            // means "fraction of this CPU's range" rather than of a guess.
+            (
+                cpu.add_row(
+                    "Core Clock",
+                    "MHz",
+                    0,
+                    legiontoolkit::system::cpu_clock_max_mhz().unwrap_or(5000.0),
+                ),
+                "cpu_clock",
+            ),
             (
                 cpu.add_row("Temperature", "\u{00b0}C", 0, 110.0),
                 "cpu_temp",
             ),
         ];
 
+        // The reference's GPU card carries utilization, VRAM, clock, fan and
+        // temperature. Ours fills the same shape from nvidia-smi.
         let mut gpu = SensorCard::new("GPU");
-        let gpu_rows = vec![(
-            gpu.add_row("Temperature", "\u{00b0}C", 0, 110.0),
-            "gpu_temp",
-        )];
+        // The model goes on the card once, not on every row.
+        if let Some(reading) = system::gpu() {
+            gpu.set_detail(&reading.name);
+        }
+        let gpu_rows = vec![
+            (gpu.add_row("Utilization", "%", 0, 100.0), "gpu_utilization"),
+            (
+                gpu.add_row("Temperature", "\u{00b0}C", 0, 110.0),
+                "gpu_temp",
+            ),
+            (gpu.add_row("Core Clock", "MHz", 0, 3000.0), "gpu_clock"),
+            (gpu.add_row("Power", "W", 0, 175.0), "gpu_power"),
+            (gpu.add_row("Memory", "MiB", 0, 8192.0), "gpu_memory"),
+        ];
 
         let mut fans = SensorCard::new("Fans");
         let mut fan_rows = Vec::new();
-        for (i, (key, label)) in [
+        for (key, label) in [
             ("fan1_rpm", "CPU Fan"),
             ("fan2_rpm", "GPU Fan"),
             ("fan3_rpm", "Auxiliary Fan"),
             ("fan4_rpm", "Fourth Fan"),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            fan_rows.push((fans.add_row(label, "rpm", i, 6000.0), key));
+        ] {
+            // Precision 0: revolutions are whole numbers, and the loop index
+            // was being passed here by mistake, printing "3300.0 rpm".
+            fan_rows.push((fans.add_row(label, "rpm", 0, 6000.0), key));
         }
 
         let mut memory = SensorCard::new("Memory");
@@ -373,12 +544,12 @@ fn thermal_page(out: &Rc<RefCell<Option<Rc<ThermalCards>>>>) -> Page {
 
         page.append(&grid);
         *out.borrow_mut() = Some(Rc::clone(&cards));
-    })
+    }
 }
 
 /// Re-read every sensor row from the capability set.
 fn refresh_thermal(
-    caps: &Rc<RefCell<Vec<Capability>>>,
+    caps: &Rc<RefCell<Vec<Arc<Capability>>>>,
     thermal: &Rc<RefCell<Option<Rc<ThermalCards>>>>,
 ) {
     // Clone the Rc out of the cell so the borrow is not held while the cards
@@ -392,7 +563,7 @@ fn refresh_thermal(
 
     let value = |key: &str| {
         caps.iter()
-            .find(|c| c.key == key)
+            .find(|c| c.key == *key)
             .and_then(|c| c.read().ok())
             .and_then(|v| match v {
                 Value::Float(f) => Some(f),
@@ -410,7 +581,19 @@ fn refresh_thermal(
     for (row, key) in cards.fan_rows.iter() {
         cards.fans.set_value(*row, value(key));
     }
+    // The reference's RAM card reads "Utilization  10.8/15.7 GB": the absolute
+    // in the label, the percentage in the meter.
     for (row, key) in cards.memory_rows.iter() {
+        if *key == "memory_utilization" {
+            if let Some(m) = system::memory() {
+                cards.memory.set_text(
+                    *row,
+                    m.percent / 100.0,
+                    &format!("{:.1} / {:.1} GB", m.used_gib, m.total_gib),
+                );
+                continue;
+            }
+        }
         cards.memory.set_value(*row, value(key));
     }
     for (row, key) in cards.disk_rows.iter() {
@@ -496,7 +679,7 @@ impl BatteryPage {
             // Bind the borrow: a temporary would be dropped while `cap` is
             // still alive.
             let backend = self.backend.borrow();
-            let Some(cap) = backend.iter().find(|c| c.key == key) else {
+            let Some(cap) = backend.iter().find(|c| c.key == *key) else {
                 continue;
             };
             let value = Label::new(None);
@@ -511,12 +694,20 @@ impl BatteryPage {
         self.refresh();
     }
 
+    /// Re-read the battery cards, but only while the page is on screen.
+    fn refresh_if_mapped(&self) {
+        if !self.page.widget().is_mapped() {
+            return;
+        }
+        self.refresh();
+    }
+
     fn refresh(&self) {
         let lookup = |key: &str| {
             self.backend
                 .borrow()
                 .iter()
-                .find(|c| c.key == key)
+                .find(|c| c.key == *key)
                 .and_then(|c| c.read().ok())
         };
 
@@ -537,7 +728,7 @@ impl BatteryPage {
             let backend = self.backend.borrow();
             let unit = backend
                 .iter()
-                .find(|c| c.key == key)
+                .find(|c| c.key == *key)
                 .and_then(|c| c.unit)
                 .unwrap_or("");
             label.set_label(&match lookup(key) {
@@ -586,18 +777,40 @@ fn stat_card(title: &str, value: &Label) -> GtkBox {
 // ---------------------------------------------------------------------------
 
 fn about_page() -> Page {
-    about_page_impl(None)
+    about_page_body(None, Vec::new(), Vec::new())
 }
 
-fn about_page_with(backend: &dyn Backend) -> Page {
-    about_page_impl(Some((
+fn about_page_with(backend: &dyn Backend, caps: &[Arc<Capability>]) -> Page {
+    let info = Some((
         backend.name().to_string(),
         driver_status(),
         paths::machine_summary(),
-    )))
+    ));
+    // Rebuilt with the full capability list so the compatibility report is
+    // always current.
+    let working: Vec<(String, String)> = caps
+        .iter()
+        .filter(|c| c.is_available())
+        .map(|c| (c.label.clone(), c.key.clone()))
+        .collect();
+    let missing: Vec<(String, &'static str)> = caps
+        .iter()
+        .filter(|c| !c.is_available())
+        .map(|c| {
+            (
+                c.label.clone(),
+                c.unavailable_reason.unwrap_or("Unavailable"),
+            )
+        })
+        .collect();
+    about_page_body(info, working, missing)
 }
 
-fn about_page_impl(info: Option<(String, String, String)>) -> Page {
+fn about_page_body(
+    info: Option<(String, String, String)>,
+    working: Vec<(String, String)>,
+    missing: Vec<(String, &'static str)>,
+) -> Page {
     Page::new(move |page| {
         page.heading("About");
 
@@ -626,6 +839,21 @@ fn about_page_impl(info: Option<(String, String, String)>) -> Page {
             page.append(&row);
         }
 
+        // The compatibility report. Pages hide what this machine cannot do so
+        // the working controls are not buried; the detail belongs here, stated
+        // once.
+        page.subheading(&format!("Supported on this machine ({})", working.len()));
+        for (label, key) in &working {
+            page.append(&compat_row(label, key, "llt-ok"));
+        }
+
+        if !missing.is_empty() {
+            page.subheading(&format!("Not available ({})", missing.len()));
+            for (label, reason) in &missing {
+                page.append(&compat_row(label, reason, "llt-missing"));
+            }
+        }
+
         let note = Label::new(Some(
             "Built on GTK 4 and libadwaita. Hardware access via LenovoLegionLinux and the Linux kernel.",
         ));
@@ -634,6 +862,28 @@ fn about_page_impl(info: Option<(String, String, String)>) -> Page {
         note.set_margin_top(16);
         page.append(&note);
     })
+}
+
+/// One line of the compatibility report.
+fn compat_row(label: &str, detail: &str, class: &str) -> GtkBox {
+    let row = GtkBox::new(Orientation::Horizontal, 12);
+    row.set_margin_start(4);
+    row.set_margin_bottom(2);
+
+    let name = Label::new(Some(label));
+    name.add_css_class("llt-compat-name");
+    name.set_halign(Align::Start);
+    name.set_hexpand(true);
+    name.set_xalign(0.0);
+    row.append(&name);
+
+    let detail = Label::new(Some(detail));
+    detail.add_css_class(class);
+    detail.set_halign(Align::End);
+    detail.set_xalign(1.0);
+    row.append(&detail);
+
+    row
 }
 
 // ---------------------------------------------------------------------------
@@ -783,12 +1033,13 @@ fn settings_page(refresh_seconds: Rc<RefCell<u32>>) -> Page {
         page.append(card.widget());
 
         let (card, remember) = setting_switch(
-            "Remember Window Position",
-            "Re-open at the size and place you left it.",
-            current.remember_window_position,
+            "Remember Window Size",
+            "Re-open at the size you left it. GTK 4 cannot place a window, so \
+             only the size is kept.",
+            current.remember_window_size,
         );
         remember.connect_state_set(|_, active| {
-            let _ = settings::update(|s| s.remember_window_position = active);
+            let _ = settings::update(|s| s.remember_window_size = active);
             glib::Propagation::Proceed
         });
         page.append(card.widget());
@@ -811,9 +1062,200 @@ fn settings_page(refresh_seconds: Rc<RefCell<u32>>) -> Page {
                 "Legion Toolkit",
                 "Built on GTK 4 and libadwaita. Hardware access via LenovoLegionLinux \
                  and the Linux kernel.",
-                &gtk4::Label::new(None),
+                &gtk4::Box::new(Orientation::Horizontal, 0),
             )
             .widget(),
         );
     })
+}
+
+// ---------------------------------------------------------------------------
+// Custom mode — named presets of power settings
+// ---------------------------------------------------------------------------
+
+/// A section for named presets, matching the reference's custom mode.
+///
+/// The reference's `GodModeSettingsWindow` edits a `GodModePreset`: a name plus
+/// one value per tunable. This is the same idea with the capability list doing
+/// the work — a preset is a map of capability key to value, applying one writes
+/// each entry through the same path a slider uses, and capturing one reads the
+/// current values back.
+fn presets_section(caps: Rc<RefCell<Vec<Arc<Capability>>>>) -> LltCard {
+    use legiontoolkit::presets::PresetStore;
+
+    let store = Rc::new(RefCell::new(PresetStore::load()));
+    let names: Vec<String> = store
+        .borrow()
+        .presets
+        .iter()
+        .map(|p| p.name.clone())
+        .collect();
+    let labels: Vec<&str> = names.iter().map(String::as_str).collect();
+
+    let dropdown = gtk4::DropDown::from_strings(&labels);
+    dropdown.set_valign(Align::Center);
+    dropdown.set_selected(store.borrow().active as u32);
+
+    let apply = gtk4::Button::with_label("Apply");
+    apply.add_css_class("suggested-action");
+
+    let capture = gtk4::Button::with_label("Capture current");
+    capture.set_tooltip_text(Some(
+        "Save the current values of every configurable setting into this preset",
+    ));
+
+    let actions = GtkBox::new(Orientation::Horizontal, 8);
+    actions.append(&capture);
+    actions.append(&apply);
+
+    let card = LltCard::new();
+    card.set_header(
+        "",
+        "Custom Presets",
+        Some(
+            "A named set of power limits. Applying one switches to custom power mode, \
+             then writes every value in the preset.",
+        ),
+        &[],
+    );
+    card.set_accessory(&dropdown);
+    card.append(&actions);
+
+    let status = Label::new(None);
+    status.add_css_class("llt-card-note");
+    status.set_halign(Align::Start);
+    status.set_wrap(true);
+    card.append(&status);
+
+    // Selecting a preset makes it active, and persists that.
+    dropdown.connect_selected_notify({
+        let store = Rc::clone(&store);
+        move |dropdown| {
+            let mut store = store.borrow_mut();
+            store.active = dropdown.selected() as usize;
+            let _ = store.save();
+        }
+    });
+
+    // Apply: custom mode first, then each value.
+    apply.connect_clicked({
+        let store = Rc::clone(&store);
+        let caps = Rc::clone(&caps);
+        let status = status.clone();
+        let card = card.clone();
+        move |_| {
+            let preset = match store.borrow().active_preset() {
+                Some(p) => p.clone(),
+                None => return,
+            };
+            apply_preset(&preset, &caps, &card, &status);
+        }
+    });
+
+    // Capture: read every writable capability's current value into the preset.
+    capture.connect_clicked({
+        let store = Rc::clone(&store);
+        let caps = Rc::clone(&caps);
+        let status = status.clone();
+        move |_| {
+            // Bind the borrow: a temporary would be dropped while the
+            // iterator over it is still alive.
+            let capabilities = caps.borrow();
+            let current: Vec<(String, String)> = capabilities
+                .iter()
+                .filter(|cap| cap.can_write())
+                .filter_map(|cap| {
+                    let value = cap.read().ok()?;
+                    Some((cap.key.clone(), display_value(&value)))
+                })
+                .collect();
+            drop(capabilities);
+            let mut store = store.borrow_mut();
+            store.active = store.capture_to_active(current.into_iter());
+            let count = store
+                .active_preset()
+                .map(|p| p.setting_count())
+                .unwrap_or(0);
+            let _ = store.save();
+            status.set_label(&format!("Captured {count} settings into this preset."));
+        }
+    });
+
+    card
+}
+
+/// The string a preset stores for a value.
+///
+/// Text values are stored verbatim; numbers lose their formatting, because the
+/// file being written wants `70`, not `70.0 W`.
+fn display_value(value: &Value) -> String {
+    match value {
+        Value::Bool(true) => "1".into(),
+        Value::Bool(false) => "0".into(),
+        Value::Int(i) => i.to_string(),
+        Value::Float(f) => {
+            if f.fract() == 0.0 {
+                format!("{f:.0}")
+            } else {
+                f.to_string()
+            }
+        }
+        Value::Text(t) => t.clone(),
+    }
+}
+
+/// Apply a preset: switch to custom power mode, then write each value.
+///
+/// The mode switch comes first and deliberately: on this firmware several of
+/// the power limits report no writable range outside custom mode, so writing
+/// them first would fail.
+fn apply_preset(
+    preset: &legiontoolkit::presets::Preset,
+    caps: &Rc<RefCell<Vec<Arc<Capability>>>>,
+    card: &LltCard,
+    status: &Label,
+) {
+    let capabilities = caps.borrow();
+
+    // 1. Custom power mode, if the machine offers one.
+    if let Some(mode) = capabilities.iter().find(|c| c.key == "powermode") {
+        let custom = mode
+            .values
+            .iter()
+            .find(|v| v.value == "custom" || v.label.eq_ignore_ascii_case("custom"));
+        if let Some(custom) = custom {
+            if let Err(e) = mode.write(Value::Text(custom.value.clone())) {
+                card.set_outcome(
+                    Severity::Error,
+                    &format!("Could not enter custom mode: {e}"),
+                );
+                return;
+            }
+        }
+    }
+
+    // 2. Every value the preset holds that this machine actually has.
+    let mut written = 0;
+    let mut skipped = 0;
+    for (key, value) in &preset.values {
+        match capabilities.iter().find(|c| c.key == *key) {
+            Some(cap) if cap.can_write() => match cap.write(Value::Text(value.clone())) {
+                Ok(()) => written += 1,
+                Err(e) => {
+                    card.set_outcome(Severity::Error, &format!("{key}: {e}"));
+                    return;
+                }
+            },
+            // A preset may name settings this machine does not have. That is
+            // not an error — the same preset is meant to work elsewhere.
+            _ => skipped += 1,
+        }
+    }
+
+    let message = if skipped > 0 {
+        format!("Applied {written} settings ({skipped} not present on this machine).")
+    } else {
+        format!("Applied {written} settings.")
+    };
+    status.set_label(&message);
 }

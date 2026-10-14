@@ -28,6 +28,8 @@ struct Row {
 /// A card of related readings, matching the reference's `SensorCardStyle`.
 pub struct SensorCard {
     root: GtkBox,
+    /// The title row, so a right-aligned detail can be added beside the title.
+    detail: GtkBox,
     rows: Vec<Row>,
 }
 
@@ -37,15 +39,43 @@ impl SensorCard {
         root.add_css_class("llt-card");
         root.add_css_class("llt-sensor-card");
 
+        // The reference puts the device model at the right of the card title
+        // rather than repeating it on every row.
+        let title_row = GtkBox::new(Orientation::Horizontal, 8);
         let title_label = Label::new(Some(title));
         title_label.add_css_class("llt-sensor-title");
         title_label.set_halign(Align::Start);
-        root.append(&title_label);
+        title_label.set_hexpand(true);
+        title_row.append(&title_label);
+        root.append(&title_row);
 
         Self {
             root,
+            detail: title_row,
             rows: Vec::new(),
         }
+    }
+
+    /// Set the small right-aligned label beside the title — a device model.
+    pub fn set_detail(&self, text: &str) {
+        // Replace any previous detail so a re-render cannot stack them up.
+        while let Some(child) = self.detail.last_child() {
+            if child.downcast_ref::<Label>().is_some()
+                && self.detail.observe_children().n_items() > 1
+            {
+                self.detail.remove(&child);
+            } else {
+                break;
+            }
+        }
+        if text.is_empty() {
+            return;
+        }
+        let label = Label::new(Some(text));
+        label.add_css_class("llt-sensor-detail");
+        label.set_halign(Align::End);
+        label.set_valign(Align::Start);
+        self.detail.append(&label);
     }
 
     /// Add a row of `label → value + meter`.
@@ -119,6 +149,19 @@ impl SensorCard {
                 row_data.meter.set_fraction(0.0);
             }
         }
+    }
+
+    /// Show a value that is not a bare number, e.g. the reference's
+    /// `10.8/15.7 GB` on its RAM card.
+    ///
+    /// The meter still takes a fraction, so the row keeps its at-a-glance
+    /// reading while the label carries the absolute.
+    pub fn set_text(&self, row: usize, fraction: f64, text: &str) {
+        let Some(row_data) = self.rows.get(row) else {
+            return;
+        };
+        row_data.value.set_label(text);
+        row_data.meter.set_fraction(fraction.clamp(0.0, 1.0));
     }
 
     pub fn widget(&self) -> &GtkBox {

@@ -43,7 +43,7 @@ impl Severity {
             Self::Info => "dialog-information-symbolic",
             Self::Warning => "dialog-warning-symbolic",
             Self::Error => "dialog-error-symbolic",
-            Self::Success => "emblem-ok-symbolic",
+            Self::Success => "object-select-symbolic",
         }
     }
 
@@ -58,9 +58,13 @@ impl Severity {
 }
 
 /// A card-level status message.
-pub struct Status {
+///
+/// Borrows its text rather than requiring `'static`. `GtkLabel::new` copies the
+/// string into the widget, so the row outlives the borrow on its own — the
+/// earlier `&'static str` forced every dynamic message to be leaked.
+pub struct Status<'a> {
     pub severity: Severity,
-    pub text: &'static str,
+    pub text: &'a str,
 }
 
 /// A rounded, bordered container with the reference's card anatomy.
@@ -119,10 +123,6 @@ impl LltCard {
         if text.is_empty() {
             return;
         }
-        // Leaked deliberately: a status row outlives no more than the card, and
-        // the alternative is threading a lifetime through the whole widget tree
-        // for a string that is displayed once.
-        let text: &'static str = Box::leak(text.to_string().into_boxed_str());
         self.outcome.append(&status_row(&Status { severity, text }));
     }
 
@@ -188,7 +188,7 @@ impl Default for LltCard {
 }
 
 /// One status line: a small icon and a coloured message.
-fn status_row(entry: &Status) -> GtkBox {
+fn status_row(entry: &Status<'_>) -> GtkBox {
     let row = GtkBox::new(Orientation::Horizontal, 6);
     row.add_css_class("llt-card-status");
     row.add_css_class(entry.severity.css_class());

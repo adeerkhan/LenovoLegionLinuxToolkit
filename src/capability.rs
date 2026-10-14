@@ -27,6 +27,12 @@ pub enum Kind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Group {
     Power,
+    /// CPU and GPU controls and readouts, kept apart from Power.
+    ///
+    /// The power limits and the GPU telemetry are the bulk of what the
+    /// firmware exposes; leaving them under "Power" buried them behind the mode
+    /// selector.
+    Processors,
     Thermal,
     Lighting,
     Battery,
@@ -37,6 +43,7 @@ impl Group {
     pub fn title(self) -> &'static str {
         match self {
             Self::Power => "Power",
+            Self::Processors => "Processors & GPU",
             Self::Thermal => "Thermal",
             Self::Lighting => "Lighting",
             Self::Battery => "Battery",
@@ -95,7 +102,12 @@ impl fmt::Display for Value {
 /// handed to the UI without it knowing anything about sysfs.
 pub struct Capability {
     /// Stable identifier, e.g. `"powermode"`. Persisted in profiles.
-    pub key: &'static str,
+    ///
+    /// Owned rather than `&'static str` because some capabilities are
+    /// *discovered* rather than declared — the firmware-attributes class
+    /// exposes a variable set of power limits whose names differ per model, and
+    /// they cannot be written as literals.
+    pub key: String,
     pub label: String,
     pub icon: &'static str,
     pub kind: Kind,
@@ -116,7 +128,11 @@ pub struct Capability {
     pub unit: Option<&'static str>,
 
     /// A description under the title, matching the reference's subtitle.
-    pub note: Option<&'static str>,
+    ///
+    /// Owned rather than `&'static str`: a note composed at build time (the
+    /// disk-usage card's "150 GiB of 230 GiB") would otherwise have to be
+    /// leaked, once per `capabilities()` call.
+    pub note: Option<String>,
 
     /// Card status rows, matching the reference's `Warning` / `Info` / `Error` /
     /// `Success`. These are how a control explains a consequence before the user
@@ -162,7 +178,7 @@ impl Capability {
 /// A builder, because `Capability` has more fields than any call site cares
 /// about and most of them are `None`.
 pub struct Builder {
-    key: &'static str,
+    key: String,
     label: String,
     icon: &'static str,
     kind: Kind,
@@ -171,7 +187,7 @@ pub struct Builder {
     values: Vec<NamedValue>,
     limits: Option<Limits>,
     unit: Option<&'static str>,
-    note: Option<&'static str>,
+    note: Option<String>,
     warnings: Vec<&'static str>,
     infos: Vec<&'static str>,
     dangerous: bool,
@@ -180,9 +196,9 @@ pub struct Builder {
 }
 
 impl Builder {
-    pub fn new(key: &'static str, kind: Kind, group: Group) -> Self {
+    pub fn new(key: impl Into<String>, kind: Kind, group: Group) -> Self {
         Self {
-            key,
+            key: key.into(),
             label: String::new(),
             icon: "",
             kind,
@@ -231,8 +247,8 @@ impl Builder {
         self
     }
 
-    pub fn note(mut self, note: &'static str) -> Self {
-        self.note = Some(note);
+    pub fn note(mut self, note: impl Into<String>) -> Self {
+        self.note = Some(note.into());
         self
     }
 

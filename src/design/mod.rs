@@ -75,25 +75,55 @@ pub const STYLE_CSS: &str = r#"
     color: @success_color;
 }
 
+/* The compatibility report on the About page. */
+.llt-compat-name {
+    font-size: 12px;
+}
+
+.llt-ok {
+    font-size: 11px;
+    opacity: 0.45;
+    font-family: monospace;
+}
+
+.llt-missing {
+    font-size: 11px;
+    opacity: 0.6;
+    font-style: italic;
+}
+
+/* One line at the foot of a page naming what this machine lacks. */
+.llt-page-footnote {
+    font-size: 12px;
+    opacity: 0.5;
+    margin: 16px 0 0 0;
+}
+
 /* The compact 40x6 bar from the reference SensorsControlV2. */
 .llt-meter {
     min-width: 40px;
     min-height: 6px;
 }
 
-/* GtkProgressBar draws progress inside a trough. The reference bar is a solid
-   accent fill 6px high, so the trough is darkened and the fill takes the accent. */
+/* The reference's data bars are blue even though its brand accent is red: the
+   accent marks interactive things (buttons, selected rows) and the bar marks a
+   measurement. Using the accent for both made every reading look like an alert,
+   which is why the first version read as cheap. */
+@define-color llt_meter_fill #3584e4;
+@define-color llt_meter_track alpha(currentColor, 0.13);
+
 .llt-meter trough {
     min-height: 6px;
     min-width: 40px;
     border-radius: 3px;
-    background-color: alpha(currentColor, 0.18);
+    background-color: @llt_meter_track;
 }
 
 .llt-meter progress {
     min-height: 6px;
     border-radius: 3px;
-    background-color: @accent_bg_color;
+    background-image: linear-gradient(to right,
+        alpha(@llt_meter_fill, 0.85), @llt_meter_fill);
 }
 
 .llt-value {
@@ -130,6 +160,11 @@ pub const STYLE_CSS: &str = r#"
     font-weight: 600;
     font-size: 14px;
     margin-bottom: 12px;
+}
+
+.llt-sensor-detail {
+    font-size: 11px;
+    opacity: 0.45;
 }
 
 .llt-sensor-label {

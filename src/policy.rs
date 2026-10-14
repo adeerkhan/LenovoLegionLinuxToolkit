@@ -29,6 +29,73 @@ pub fn is_writable(key: &str) -> bool {
     HELPER_WRITABLE.contains(&key)
 }
 
+/// Directories the helper is permitted to write into.
+///
+/// The key allowlist below is a list of *names*; this is a list of
+/// *destinations*, and it is the stronger of the two. Names can be discovered
+/// at runtime — the firmware-attributes class exposes whatever tunables the
+/// BIOS has, under names that differ per model — so a fixed list of names
+/// cannot cover them. Every one of those attributes still resolves to a path
+/// under `/sys/class/firmware-attributes/`, and checking that is what stops a
+/// crafted key from reaching anywhere else.
+pub const WRITABLE_ROOTS: &[&str] = &[
+    "/sys/class/firmware-attributes/",
+    "/sys/firmware/acpi/",
+    "/sys/class/leds/",
+    "/sys/module/legion_laptop/",
+    "/sys/bus/platform/drivers/ideapad",
+];
+
+/// True when `path` lies inside one of [`WRITABLE_ROOTS`].
+///
+/// Deliberately a lexical check rather than `canonicalize`, and the reason is
+/// worth recording because the obvious version is wrong. sysfs presents one
+/// device under several paths: `/sys/class/firmware-attributes/…` resolves to
+/// `/sys/devices/virtual/firmware-attributes/…`. Canonicalising one end of the
+/// comparison and not the other makes a legitimate path look like an escape —
+/// which is exactly what a test caught here.
+///
+/// What actually guarantees safety:
+/// - **No `..` component**, so a name cannot climb out of its directory. The
+///   only caller-supplied component is a firmware attribute name, already
+///   validated to be alphanumeric.
+/// - **A prefix of an allowlisted root**, so the destination is one of a fixed
+///   set of sysfs subtrees even if the key were crafted.
+/// - **Not a symlink itself**, so the final component cannot redirect the write.
+pub fn is_allowed_path(path: &std::path::Path) -> bool {
+    use std::path::Component;
+
+    if path
+        .components()
+        .any(|c| matches!(c, Component::ParentDir | Component::Prefix(_)))
+    {
+        return false;
+    }
+    if !WRITABLE_ROOTS
+        .iter()
+        .any(|root| path.starts_with(std::path::Path::new(root)))
+    {
+        return false;
+    }
+    !std::fs::symlink_metadata(path)
+        .map(|meta| meta.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+/// The capability key prefix used for discovered firmware attributes.
+pub const FIRMWARE_PREFIX: &str = "firmware:";
+
+/// Resolve a capability key to the file to write.
+///
+/// Returns `None` for an unknown key, or for a firmware attribute that does not
+/// exist on this machine.
+pub fn resolve_target(key: &str) -> Option<std::path::PathBuf> {
+    if let Some(name) = key.strip_prefix(FIRMWARE_PREFIX) {
+        return crate::system::firmware_attribute_path(name);
+    }
+    crate::paths::discover().file(key)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -45,14 +112,61 @@ mod tests {
     fn every_writable_capability_is_allowed() {
         let backend = SysfsBackend::new();
         for cap in backend.capabilities() {
-            if cap.can_write() {
-                assert!(
-                    is_writable(cap.key),
-                    "capability {:?} is writable but not in HELPER_WRITABLE",
-                    cap.key
-                );
+            if !cap.can_write() {
+                continue;
             }
+            // A capability is permitted if its key is on the name allowlist, or
+            // if it resolves to a path inside an allowed root. Discovered
+            // firmware attributes take the second route, which is why the
+            // destination check exists at all.
+            let named = is_writable(&cap.key);
+            let resolved_ok = resolve_target(&cap.key)
+                .map(|path| is_allowed_path(&path))
+                .unwrap_or(false);
+            assert!(
+                named || resolved_ok,
+                "capability {:?} is writable but neither named nor inside an allowed root",
+                cap.key
+            );
         }
+    }
+
+    /// The destination check is the boundary that a crafted key cannot cross.
+    #[test]
+    fn paths_outside_the_roots_are_refused() {
+        assert!(!is_allowed_path(std::path::Path::new("/etc/passwd")));
+        assert!(!is_allowed_path(std::path::Path::new("/tmp/anything")));
+        // A traversal component is refused even when it starts out inside a root.
+        assert!(!is_allowed_path(std::path::Path::new(
+            "/sys/class/leds/../../../etc/passwd"
+        )));
+    }
+
+    /// Every real firmware attribute the kernel exposes must pass the check.
+    /// This is the assertion that caught the canonicalisation mistake.
+    #[test]
+    fn real_firmware_attributes_are_allowed() {
+        let attributes = crate::system::firmware_attributes();
+        for attribute in &attributes {
+            let Some(path) = crate::system::firmware_attribute_path(&attribute.name) else {
+                continue;
+            };
+            assert!(
+                is_allowed_path(&path),
+                "{} resolves to {} which the helper would refuse",
+                attribute.name,
+                path.display()
+            );
+        }
+    }
+
+    /// A firmware attribute name is used as a path component, so it must not be
+    /// able to climb out of its directory.
+    #[test]
+    fn traversal_in_an_attribute_name_is_refused() {
+        assert!(crate::system::firmware_attribute_path("../../etc/shadow").is_none());
+        assert!(crate::system::firmware_attribute_path("a/b").is_none());
+        assert!(crate::system::firmware_attribute_path("").is_none());
     }
 
     // Note the converse is *not* asserted: the allowlist may legitimately cover

@@ -32,7 +32,7 @@ impl SysfsBackend {
     /// a sibling `choices` file where the driver provides one.
     fn enum_cap(
         &self,
-        key: &'static str,
+        key: &str,
         label: &str,
         icon: &'static str,
         group: Group,
@@ -41,15 +41,8 @@ impl SysfsBackend {
         let path = self.paths.file(key);
         let available = path.as_ref().map(|p| p.exists()).unwrap_or(false);
 
-        let mut values: Vec<NamedValue> = self
-            .paths
-            .file(key)
-            .and_then(|p| {
-                p.parent()
-                    .map(|d| d.join("choices"))
-                    .filter(|c| c.exists())
-                    .and_then(|c| read_trim(&c).ok())
-            })
+        let mut values: Vec<NamedValue> = choices_for(key)
+            .and_then(|c| read_trim(&c).ok())
             .map(|raw| {
                 raw.split_whitespace()
                     .map(|v| NamedValue {
@@ -99,7 +92,7 @@ impl SysfsBackend {
     /// Add a toggle backed by a sysfs file that uses `0`/`1`.
     fn toggle_cap(
         &self,
-        key: &'static str,
+        key: &str,
         label: &str,
         icon: &'static str,
         group: Group,
@@ -139,7 +132,7 @@ impl SysfsBackend {
     /// reports them that way.
     fn sensor_cap(
         &self,
-        key: &'static str,
+        key: &str,
         label: &str,
         icon: &'static str,
         group: Group,
@@ -171,7 +164,7 @@ impl SysfsBackend {
     /// the user and are otherwise indistinguishable in sysfs.
     fn reason_for(&self, key: &str) -> &'static str {
         if !self.module_loaded && !keys_from_ideapad().contains(&key) {
-            "Requires the legion_laptop driver"
+            "Needs the legion_laptop kernel module (see About)"
         } else {
             "Not supported by this model"
         }
@@ -227,7 +220,7 @@ impl Backend for SysfsBackend {
         let mut max_fan = self.toggle_cap(
             "fan_fullspeed",
             "Maximum Fan Speed",
-            "fan-symbolic",
+            "weather-windy-symbolic",
             Group::Power,
             None,
         );
@@ -252,7 +245,7 @@ impl Backend for SysfsBackend {
             let has_coretemp = paths::find_hwmon_by_name("coretemp").is_some();
             let mut b = Builder::new("cpu_temp", Kind::ReadOnly, Group::Thermal)
                 .label("CPU Temperature")
-                .icon("cpu-symbolic")
+                .icon("org.gnome.Settings-device-diagnostics-symbolic")
                 .unit("°C");
             match (&legion, has_coretemp) {
                 (Some(path), _) => {
@@ -274,12 +267,14 @@ impl Backend for SysfsBackend {
             caps.push(b.build());
         }
 
-        for (key, label, icon) in [
-            ("gpu_temp", "GPU Temperature", "video-display-symbolic"),
-            ("ic_temp", "Chipset Temperature", "motherboard-symbolic"),
-        ] {
-            caps.push(self.sensor_cap(key, label, icon, Group::Thermal, "°C", true));
-        }
+        caps.push(self.sensor_cap(
+            "ic_temp",
+            "Chipset Temperature",
+            "application-x-firmware-symbolic",
+            Group::Thermal,
+            "°C",
+            true,
+        ));
 
         for (key, label) in [
             ("fan1_rpm", "CPU Fan"),
@@ -287,7 +282,150 @@ impl Backend for SysfsBackend {
             ("fan3_rpm", "Auxiliary Fan"),
             ("fan4_rpm", "Fourth Fan"),
         ] {
-            caps.push(self.sensor_cap(key, label, "fan-symbolic", Group::Thermal, "rpm", false));
+            caps.push(self.sensor_cap(
+                key,
+                label,
+                "weather-windy-symbolic",
+                Group::Thermal,
+                "rpm",
+                false,
+            ));
+        }
+
+        // ---- Firmware attributes, discovered -------------------------------
+        //
+        // The kernel's `firmware-attributes` class exposes the BIOS's own
+        // tunables, and the in-tree `lenovo-wmi-other` driver populates it. Each
+        // attribute carries min, max and increment, so these controls are
+        // *generated* rather than written out per model — which is the only way
+        // to cover machines whose BIOS names them differently.
+        //
+        // Ten controls that used to read "not exposed by this model's firmware"
+        // come from here.
+        for attribute in system::firmware_attributes() {
+            let writable = attribute.is_writable();
+            let name = attribute.name.clone();
+            let key = format!("{}{}", crate::policy::FIRMWARE_PREFIX, name);
+
+            let mut b = Builder::new(key.clone(), Kind::Slider, Group::Processors)
+                .label(if attribute.description.is_empty() {
+                    name.clone()
+                } else {
+                    attribute.description.clone()
+                })
+                .icon("power-profile-performance-symbolic")
+                .limits(Limits {
+                    min: attribute.min,
+                    max: attribute.max,
+                    step: attribute.step,
+                });
+
+            if let Some(unit) = attribute.unit {
+                b = b.unit(unit);
+            }
+
+            if writable {
+                let read_path = system::firmware_attribute_path(&name);
+                b = b.read(move || {
+                    let value = read_path
+                        .as_ref()
+                        .and_then(|p| read_trim(p).ok())
+                        .and_then(|raw| raw.parse::<f64>().ok())
+                        .unwrap_or(0.0);
+                    Ok(Value::Float(value))
+                });
+                b = b.write(move |value| {
+                    crate::services::privilege::request(&key, &value.to_string())?;
+                    Ok(())
+                });
+            } else {
+                // `min == max` means the firmware is refusing writes in the
+                // current power mode. A slider with no range is a broken
+                // control, so the card says why instead.
+                b = b.unavailable(
+                    "The firmware is not accepting changes to this in the current power mode",
+                );
+            }
+
+            caps.push(b.build());
+        }
+
+        // ---- GPU, via nvidia-smi ------------------------------------------
+        //
+        // No sysfs equivalent exists for GPU telemetry on NVIDIA hardware, and
+        // the legion module does not expose it either. `system::gpu()` reads a
+        // cache filled by a background poller, so nothing here forks a process.
+        if let Some(gpu) = system::gpu() {
+            for (key, label, unit, friendly, value) in [
+                (
+                    "gpu_temp",
+                    "GPU Temperature",
+                    "°C",
+                    "GPU",
+                    gpu.temperature_c,
+                ),
+                (
+                    "gpu_utilization",
+                    "GPU Utilization",
+                    "%",
+                    "GPU",
+                    gpu.utilization_percent,
+                ),
+                ("gpu_clock", "GPU Core Clock", "MHz", "GPU", gpu.clock_mhz),
+                ("gpu_power", "GPU Power", "W", "GPU", gpu.power_w),
+            ] {
+                let mut b = Builder::new(key, Kind::ReadOnly, Group::Processors)
+                    .label(label)
+                    .icon("video-display-symbolic")
+                    .unit(unit);
+                if value.is_none() {
+                    // The card exists but this sensor does not report on this
+                    // card — distinct from the GPU being absent entirely.
+                    b = b.unavailable("Not reported by this GPU");
+                } else {
+                    b = b.read(move || {
+                        let reading = system::gpu();
+                        let value = match key {
+                            "gpu_temp" => reading.and_then(|g| g.temperature_c),
+                            "gpu_utilization" => reading.and_then(|g| g.utilization_percent),
+                            "gpu_clock" => reading.and_then(|g| g.clock_mhz),
+                            "gpu_power" => reading.and_then(|g| g.power_w),
+                            _ => None,
+                        };
+                        Ok(Value::Float(value.unwrap_or(0.0)))
+                    });
+                }
+                let _ = friendly;
+                caps.push(b.build());
+            }
+
+            if let (Some(used), Some(total)) = (gpu.memory_used_mib, gpu.memory_total_mib) {
+                caps.push(
+                    Builder::new("gpu_memory", Kind::ReadOnly, Group::Processors)
+                        .label("GPU Memory")
+                        .icon("video-display-symbolic")
+                        .unit("MiB")
+                        .note(format!("{used:.0} of {total:.0} MiB"))
+                        .read(|| {
+                            Ok(Value::Float(
+                                system::gpu().and_then(|g| g.memory_used_mib).unwrap_or(0.0),
+                            ))
+                        })
+                        .build(),
+                );
+            }
+        } else {
+            // No NVIDIA GPU, or `nvidia-smi` is not installed. Say which by
+            // naming the tool, so the fix is obvious.
+            caps.push(
+                Builder::new("gpu_temp", Kind::ReadOnly, Group::Processors)
+                    .label("GPU Temperature")
+                    .icon("video-display-symbolic")
+                    .unit("°C")
+                    .unavailable("Needs nvidia-smi or the legion_laptop kernel module")
+                    .read(|| Ok(Value::Float(0.0)))
+                    .build(),
+            );
         }
 
         // ---- Generic telemetry, needing no Legion driver -------------------
@@ -298,18 +436,18 @@ impl Backend for SysfsBackend {
         // grid that reads as "unsupported machine" and one that reads as a
         // monitoring panel.
         caps.push(
-            Builder::new("cpu_utilization", Kind::ReadOnly, Group::Thermal)
+            Builder::new("cpu_utilization", Kind::ReadOnly, Group::Processors)
                 .label("CPU Utilization")
-                .icon("cpu-symbolic")
+                .icon("org.gnome.Settings-device-diagnostics-symbolic")
                 .unit("%")
                 .read(|| Ok(Value::Float(system::cpu_percent().unwrap_or(0.0))))
                 .build(),
         );
         if system::cpu_clock_mhz().is_some() {
             caps.push(
-                Builder::new("cpu_clock", Kind::ReadOnly, Group::Thermal)
+                Builder::new("cpu_clock", Kind::ReadOnly, Group::Processors)
                     .label("CPU Core Clock")
-                    .icon("cpu-symbolic")
+                    .icon("org.gnome.Settings-device-diagnostics-symbolic")
                     .unit("MHz")
                     .read(|| Ok(Value::Float(system::cpu_clock_mhz().unwrap_or(0.0))))
                     .build(),
@@ -318,16 +456,16 @@ impl Backend for SysfsBackend {
         caps.push(
             Builder::new("memory_utilization", Kind::ReadOnly, Group::Thermal)
                 .label("Memory Utilization")
-                .icon("memory-symbolic")
+                .icon("media-flash-symbolic")
                 .unit("%")
-                .read(|| Ok(Value::Float(system::memory_percent().unwrap_or(0.0))))
+                .read(|| Ok(Value::Float(system::memory().map_or(0.0, |m| m.percent))))
                 .build(),
         );
         if system::swap_percent().is_some() {
             caps.push(
                 Builder::new("swap_utilization", Kind::ReadOnly, Group::Thermal)
                     .label("Swap Utilization")
-                    .icon("memory-symbolic")
+                    .icon("media-flash-symbolic")
                     .unit("%")
                     .read(|| Ok(Value::Float(system::swap_percent().unwrap_or(0.0))))
                     .build(),
@@ -339,9 +477,7 @@ impl Backend for SysfsBackend {
                     .label("Disk Usage")
                     .icon("drive-harddisk-symbolic")
                     .unit("%")
-                    .note(Box::leak(
-                        format!("{used:.0} GiB of {total:.0} GiB").into_boxed_str(),
-                    ))
+                    .note(format!("{used:.0} GiB of {total:.0} GiB"))
                     .read(|| {
                         Ok(Value::Float(
                             system::disk_usage("/").map(|d| d.0).unwrap_or(0.0),
@@ -378,7 +514,7 @@ impl Backend for SysfsBackend {
         caps.push(
             Builder::new("fancurve", Kind::Custom, Group::Thermal)
                 .label("Fan Curve")
-                .icon("air-conditioner-symbolic")
+                .icon("weather-windy-symbolic")
                 .unavailable("Fan curves are not supported by this model's firmware")
                 .info(
                     "A fan curve maps temperature to fan speed, so the fans track \
@@ -616,7 +752,7 @@ impl Backend for SysfsBackend {
             Builder::new("battery_on_battery_since", Kind::ReadOnly, Group::Battery)
                 .label("On Battery Since")
                 .icon("preferences-system-time-symbolic")
-                .note("Since the adapter was last connected")
+                .note("Counted since this session first saw the battery discharging")
                 .read(|| {
                     // "On adapter" rather than a dash. While plugged in there is
                     // genuinely no duration, and saying so is more useful than a
@@ -673,12 +809,29 @@ impl Backend for SysfsBackend {
             ("fn_lock", "Fn Lock", "input-keyboard-symbolic"),
             ("touchpad", "Touchpad", "input-touchpad-symbolic"),
             ("camera_power", "Camera", "camera-photo-symbolic"),
-            ("usb_charging", "Always-On USB Charging", "usb-symbolic"),
+            (
+                "usb_charging",
+                "Always-On USB Charging",
+                "drive-harddisk-usb-symbolic",
+            ),
         ] {
             caps.push(self.toggle_cap(key, label, icon, Group::System, None));
         }
 
         caps
+    }
+}
+
+/// Where an enum capability's list of choices lives.
+///
+/// Not simply the sibling `choices` file: the standard ACPI platform profile
+/// keeps its list in `platform_profile_choices`, a different name in a
+/// different place than the legion module's copy.
+fn choices_for(key: &str) -> Option<std::path::PathBuf> {
+    match key {
+        "powermode" | "platform_profile" => paths::platform_profile_choices(),
+        // The legion module writes a plain `choices` beside the attribute.
+        _ => None,
     }
 }
 
@@ -816,6 +969,23 @@ mod tests {
             "battery_cycles",
         ] {
             assert!(has(key), "battery page is missing {key}");
+        }
+    }
+
+    /// Every icon a capability declares must be one the theme can draw.
+    ///
+    /// GTK renders a missing icon as a placeholder rather than failing, so this
+    /// is invisible to every other test — seven names were wrong and the cards
+    /// were drawing placeholders. No-op on a machine with no icon theme.
+    #[test]
+    fn every_capability_icon_exists() {
+        for cap in SysfsBackend::new().capabilities() {
+            assert!(
+                crate::icons::exists(cap.icon),
+                "capability {:?} declares icon {:?}, which the theme cannot draw",
+                cap.key,
+                cap.icon
+            );
         }
     }
 

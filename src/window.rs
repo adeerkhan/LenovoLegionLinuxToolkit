@@ -14,28 +14,22 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use adw::ApplicationWindow;
-use gtk4::{Box as GtkBox, Label, ListBox, Orientation, ScrolledWindow, Stack};
+use gtk4::{Box as GtkBox, ListBox, Orientation, ScrolledWindow, Stack};
 
 use crate::design::FeatureCard;
 use crate::pages::Pages;
 use legiontoolkit::backends::{Backend, MockBackend, SysfsBackend};
-use legiontoolkit::capability::Group;
-
-/// Every dashboard group, in display order.
-const GROUPS: [Group; 5] = [
-    Group::Power,
-    Group::Thermal,
-    Group::Lighting,
-    Group::Battery,
-    Group::System,
-];
 
 /// Sidebar entries, in the order the reference uses. The dashboard is always
 /// first; the rest are one per capability group, plus About.
 const NAV: [(&str, &str, &str); 8] = [
-    ("go-home-symbolic", "Dashboard", "dashboard"),
+    ("go-home-symbolic", "Home", "home"),
     ("power-profile-performance-symbolic", "Power", "power"),
-    ("fan-symbolic", "Thermal", "thermal"),
+    (
+        "org.gnome.Settings-device-diagnostics-symbolic",
+        "Processors & GPU",
+        "processors",
+    ),
     ("keyboard-brightness-symbolic", "Lighting", "lighting"),
     ("battery-symbolic", "Battery", "battery"),
     ("emblem-system-symbolic", "System", "system"),
@@ -86,17 +80,34 @@ impl MainWindow {
         let warnings = legiontoolkit::services::system_warnings(
             backend.as_ref(),
             legiontoolkit::services::privilege::is_escalation_available(),
+            &legiontoolkit::services::privilege::diagnose(),
         );
         for warning in &warnings {
             tracing::warn!("{warning}");
         }
 
+        let current = legiontoolkit::settings::current();
+        let (width, height) = current.restored_size().unwrap_or((1250, 780));
+
         let window = ApplicationWindow::builder()
             .application(app)
             .title("Legion Toolkit")
-            .default_width(1250)
-            .default_height(780)
+            .default_width(width)
+            .default_height(height)
             .build();
+
+        // Persist the size on close. GTK 4 cannot read a window's position, so
+        // only the size is kept — see `Settings::restored_size`.
+        window.connect_close_request(|window| {
+            let (width, height) = (window.width(), window.height());
+            if width > 200 && height > 200 {
+                let _ = legiontoolkit::settings::update(|s| {
+                    s.window_width = Some(width);
+                    s.window_height = Some(height);
+                });
+            }
+            glib::Propagation::Proceed
+        });
 
         let dashboard_cards: Rc<RefCell<Vec<FeatureCard>>> = Rc::new(RefCell::new(Vec::new()));
         // Shared: the refresh loop ticks the pages, and the struct needs them
@@ -109,58 +120,6 @@ impl MainWindow {
         // ------------------------------------------------------------------
         let stack = Stack::new();
         stack.set_transition_type(gtk4::StackTransitionType::Crossfade);
-
-        // The dashboard is generated from the capability report. Capabilities
-        // are consumed as they are placed so we never need to clone them.
-        {
-            let scroll = ScrolledWindow::builder()
-                .hscrollbar_policy(gtk4::PolicyType::Never)
-                .vexpand(true)
-                .build();
-
-            let page = GtkBox::new(Orientation::Vertical, 24);
-            page.set_margin_top(12);
-            page.set_margin_bottom(12);
-            page.set_margin_start(12);
-            page.set_margin_end(12);
-
-            let mut capabilities = backend.capabilities();
-            let mut empty = true;
-
-            for group in GROUPS {
-                let mut i = 0;
-                let mut any = false;
-                while i < capabilities.len() {
-                    if capabilities[i].group != group {
-                        i += 1;
-                        continue;
-                    }
-                    let cap = capabilities.remove(i);
-                    if !any {
-                        let title = Label::new(Some(cap.group.title()));
-                        title.add_css_class("llt-group-title");
-                        title.set_halign(gtk4::Align::Start);
-                        page.append(&title);
-                        any = true;
-                    }
-                    let card = FeatureCard::new(cap);
-                    page.append(card.gtk_widget());
-                    card.connect_controls(page.clone().upcast::<gtk4::Widget>());
-                    dashboard_cards.borrow_mut().push(card);
-                }
-                empty &= !any;
-            }
-
-            if empty {
-                let note = Label::new(Some("No supported hardware was detected on this machine."));
-                note.add_css_class("llt-unavailable");
-                note.set_wrap(true);
-                page.append(&note);
-            }
-
-            scroll.set_child(Some(&page));
-            stack.add_titled(&scroll, Some("dashboard"), "Dashboard");
-        }
 
         // Capability-driven pages, built once and refreshed in place.
         pages.borrow_mut().rebuild(backend.as_ref());
@@ -177,6 +136,10 @@ impl MainWindow {
         for (icon, title, _page_id) in NAV {
             let row = adw::ActionRow::builder()
                 .title(title)
+                // Adwaita interprets a title as Pango markup unless told
+                // otherwise, and "Processors & GPU" is not valid markup — the
+                // row rendered with an icon and *no text at all*.
+                .use_markup(false)
                 .activatable(true)
                 .build();
             row.add_prefix(&gtk4::Image::from_icon_name(icon));
@@ -309,6 +272,12 @@ impl MainWindow {
 
     pub fn present(&self) {
         self.window.present();
+    }
+
+    /// Log the visible page's widget tree, for checking content a capture
+    /// cannot reach.
+    pub fn log_page(&self) {
+        crate::shot::log_visible_page(&self.stack);
     }
 
     /// Select a page by name. Used by `--shot` to capture a specific section.

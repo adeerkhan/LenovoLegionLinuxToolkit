@@ -9,8 +9,10 @@
 
 pub mod backends;
 pub mod capability;
+pub mod icons;
 pub mod paths;
 pub mod policy;
+pub mod presets;
 pub mod services;
 pub mod settings;
 pub mod system;

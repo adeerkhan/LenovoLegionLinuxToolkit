@@ -37,7 +37,7 @@ pub enum ColorScheme {
 }
 
 /// Everything the Settings page owns that is not hardware state.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub temperature_unit: TemperatureUnit,
@@ -48,8 +48,14 @@ pub struct Settings {
     pub compact_mode: bool,
     /// Start hidden rather than showing the window.
     pub start_minimized: bool,
-    /// Re-open at the last window geometry.
-    pub remember_window_position: bool,
+    /// Re-open at the last window size.
+    ///
+    /// Size, not position: GTK 4 removed programmatic window placement, so the
+    /// setting is named for what it can actually honour.
+    pub remember_window_size: bool,
+    /// The last window size, in logical pixels.
+    pub window_width: Option<i32>,
+    pub window_height: Option<i32>,
 }
 
 impl Default for Settings {
@@ -63,7 +69,11 @@ impl Default for Settings {
             refresh_interval_secs: 1,
             compact_mode: false,
             start_minimized: false,
-            remember_window_position: true,
+            remember_window_size: true,
+            // Deliberately `None`: a first run should use the toolkit's own
+            // default rather than one shipped in a defaults block.
+            window_width: None,
+            window_height: None,
         }
     }
 }
@@ -124,15 +134,21 @@ impl Settings {
         self
     }
 
-    /// Whether temperatures should be converted for display.
-    pub fn uses_fahrenheit(&self) -> bool {
-        self.temperature_unit == TemperatureUnit::Fahrenheit
+    /// The size to restore, if there is one and the setting is on.
+    pub fn restored_size(&self) -> Option<(i32, i32)> {
+        if !self.remember_window_size {
+            return None;
+        }
+        match (self.window_width, self.window_height) {
+            (Some(w), Some(h)) if w > 200 && h > 200 => Some((w, h)),
+            _ => None,
+        }
     }
 
     /// Convert a Celsius reading for display, returning `(value, unit)`.
     pub fn temperature(&self, celsius: f64, celsius_label: &'static str) -> (f64, &'static str) {
         const FAHRENHEIT: &str = "°F";
-        if self.uses_fahrenheit() {
+        if self.temperature_unit == TemperatureUnit::Fahrenheit {
             (celsius * 9.0 / 5.0 + 32.0, FAHRENHEIT)
         } else {
             (celsius, celsius_label)
@@ -148,33 +164,28 @@ fn cell() -> &'static Mutex<Settings> {
 }
 
 /// A copy of the current settings.
+/// A copy of the current settings. `Settings` is `Copy`, so this allocates
+/// nothing — it is called for every sensor row on every refresh.
 pub fn current() -> Settings {
-    cell()
+    *cell()
         .lock()
-        .map(|s| s.clone())
-        .unwrap_or_else(|poisoned| poisoned.into_inner().clone())
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Change settings and persist them.
 pub fn update(change: impl FnOnce(&mut Settings)) -> anyhow::Result<Settings> {
+    // One lock for the whole operation. Taking it twice left a window where a
+    // concurrent `current()` could read a value that had not been sanitised yet
+    // — and the clamp is exactly the part that makes the value safe to use.
     let updated = {
         let mut guard = cell()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         change(&mut guard);
-        let snapshot = guard.clone();
-        // Clone before sanitising: `sanitised` takes `self` by value.
-        snapshot.sanitised()
+        let sanitised = guard.sanitised();
+        *guard = sanitised;
+        sanitised
     };
-
-    // Keep the in-memory copy sanitised too, so a clamped value is what the UI
-    // and the file agree on.
-    {
-        let mut guard = cell()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        *guard = updated.clone();
-    }
 
     updated.save()?;
     Ok(updated)
@@ -214,7 +225,9 @@ mod tests {
             refresh_interval_secs: 5,
             compact_mode: true,
             start_minimized: true,
-            remember_window_position: false,
+            remember_window_size: false,
+            window_width: Some(1024),
+            window_height: Some(768),
         };
         let text = serde_json::to_string(&s).expect("serialise");
         let back: Settings = serde_json::from_str(&text).expect("deserialise");
@@ -263,6 +276,38 @@ mod tests {
     #[test]
     fn garbage_does_not_parse() {
         assert!(serde_json::from_str::<Settings>("not json at all").is_err());
+    }
+
+    /// A saved size is only restored when the setting is on, and a nonsensical
+    /// one is ignored rather than applied — a 1x1 window would be unrecoverable.
+    #[test]
+    fn restored_size_is_guarded() {
+        let on = Settings {
+            window_width: Some(1024),
+            window_height: Some(768),
+            ..Settings::default()
+        };
+        assert_eq!(on.restored_size(), Some((1024, 768)));
+
+        let off = Settings {
+            remember_window_size: false,
+            ..on
+        };
+        assert_eq!(off.restored_size(), None);
+
+        let nonsense = Settings {
+            window_width: Some(1),
+            window_height: Some(1),
+            ..Settings::default()
+        };
+        assert_eq!(nonsense.restored_size(), None);
+
+        let unset = Settings::default();
+        assert_eq!(
+            unset.restored_size(),
+            None,
+            "a first run must use the default"
+        );
     }
 
     #[test]
