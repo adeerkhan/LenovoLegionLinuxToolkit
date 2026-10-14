@@ -117,6 +117,9 @@ impl Page {
 /// model does not describe — the presets editor is the only one so far.
 type ExtraSection = Box<dyn Fn(&mut Page, &Rc<RefCell<Vec<Arc<Capability>>>>) + 'static>;
 
+/// One titled section's predicate: the capabilities it contains.
+type SectionFilter = Rc<dyn Fn(&Capability) -> bool>;
+
 /// The landing page's sensor cards, shared between the page builder and the
 /// refresh loop. Named because the nested form is unreadable inline.
 type ThermalGrid = Rc<RefCell<Option<Rc<ThermalCards>>>>;
@@ -130,9 +133,9 @@ pub struct CapabilityPage {
     prelude: Option<ExtraSection>,
     extra: Option<ExtraSection>,
     /// When set, the page renders these titled sections instead of one flat
-    /// list. This is the dashboard layout the reference's landing page uses:
-    /// a heading, then the cards for that group side by side.
-    sections: Option<Vec<(&'static str, &'static [&'static str])>>,
+    /// list. Each section is a title and a predicate over the capability, so a
+    /// section can be a fixed set of keys or a class like "the power limits".
+    sections: Option<Vec<(&'static str, SectionFilter)>>,
 }
 
 impl CapabilityPage {
@@ -148,7 +151,7 @@ impl CapabilityPage {
     }
 
     /// Render the page as titled sections rather than one flat list.
-    fn with_sections(mut self, sections: Vec<(&'static str, &'static [&'static str])>) -> Self {
+    fn with_sections(mut self, sections: Vec<(&'static str, SectionFilter)>) -> Self {
         self.sections = Some(sections);
         self
     }
@@ -198,12 +201,17 @@ impl CapabilityPage {
         let mut unavailable: Vec<Arc<Capability>> = Vec::new();
 
         if let Some(sections) = self.sections.clone() {
-            for (title, keys) in sections {
+            for (title, predicate) in sections {
                 let grid = self.section_grid();
                 let mut shown = 0i32;
-                for key in keys {
-                    let cap = self.caps.borrow().iter().find(|c| c.key == *key).cloned();
-                    let Some(cap) = cap else { continue };
+                let caps: Vec<Arc<Capability>> = self
+                    .caps
+                    .borrow()
+                    .iter()
+                    .filter(|c| predicate(c))
+                    .cloned()
+                    .collect();
+                for cap in caps {
                     if !cap.is_available() {
                         unavailable.push(cap);
                         continue;
@@ -355,45 +363,49 @@ impl Pages {
                 .with_sections(vec![
                     (
                         "Power",
-                        &["powermode", "battery_mode", "fan_fullspeed", "usb_charging"],
+                        Rc::new(|c: &Capability| {
+                            matches!(
+                                c.key.as_str(),
+                                "powermode" | "battery_mode" | "fan_fullspeed" | "usb_charging"
+                            )
+                        }),
                     ),
-                    ("Graphics", &["igpumode", "gsync"]),
+                    (
+                        "Graphics",
+                        Rc::new(|c: &Capability| matches!(c.key.as_str(), "igpumode" | "gsync")),
+                    ),
                     (
                         "Lighting",
-                        &["kbd_backlight", "ylogo_light", "ioport_light"],
+                        Rc::new(|c: &Capability| {
+                            matches!(
+                                c.key.as_str(),
+                                "kbd_backlight" | "ylogo_light" | "ioport_light"
+                            )
+                        }),
                     ),
                 ]),
             battery: BatteryPage::new(),
-            power: CapabilityPage::new(
-                |page| {
-                    page.heading("Power");
-                },
-                Rc::clone(&caps),
-            )
-            .with_extra(|page, caps| {
+            power: CapabilityPage::new(|_| {}, Rc::clone(&caps)).with_extra(|page, caps| {
                 // The presets editor belongs on the Power page, next to the
                 // limits it stores.
                 let card = presets_section(Rc::clone(caps));
                 page.append(card.widget());
             }),
-            processors: CapabilityPage::new(
-                |page| {
-                    page.heading("Processors & GPU");
-                },
-                Rc::clone(&caps),
-            ),
-            lighting: CapabilityPage::new(
-                |page| {
-                    page.heading("Lighting");
-                },
-                Rc::clone(&caps),
-            ),
-            system: CapabilityPage::new(
-                |page| {
-                    page.heading("System");
-                },
-                Rc::clone(&caps),
-            ),
+            // The Processors page is the controls only, grouped. The telemetry
+            // (temperatures, clocks, utilization) lives in the Home sensor row;
+            // repeating it here is exactly the duplication to avoid.
+            processors: CapabilityPage::new(|_| {}, Rc::clone(&caps)).with_sections(vec![
+                (
+                    "Power Limits",
+                    Rc::new(|c: &Capability| c.key.starts_with("firmware:")),
+                ),
+                (
+                    "Graphics",
+                    Rc::new(|c: &Capability| matches!(c.key.as_str(), "igpumode" | "gsync")),
+                ),
+            ]),
+            lighting: CapabilityPage::new(|_| {}, Rc::clone(&caps)),
+            system: CapabilityPage::new(|_| {}, Rc::clone(&caps)),
             about: about_page(),
             // Built once, in `rebuild`, like every other page. Constructing it
             // here as well built and discarded a full widget tree.
@@ -413,14 +425,22 @@ impl Pages {
 
         // The landing page shows every group, sensors first.
         self.home.rebuild(|_| true);
-        self.power
-            .rebuild(|c| c.group == legiontoolkit::capability::Group::Power);
-        self.processors
-            .rebuild(|c| c.group == legiontoolkit::capability::Group::Processors);
-        self.lighting
-            .rebuild(|c| c.group == legiontoolkit::capability::Group::Lighting);
-        self.system
-            .rebuild(|c| c.group == legiontoolkit::capability::Group::System);
+        // Group pages show controls only. The read-only telemetry belongs in
+        // the Home sensor row, not repeated as a card on every page.
+        self.power.rebuild(|c| {
+            c.group == legiontoolkit::capability::Group::Power
+                && !matches!(c.kind, legiontoolkit::capability::Kind::ReadOnly)
+        });
+        // The Processors page renders sections, so its filter is unused.
+        self.processors.rebuild(|_| false);
+        self.lighting.rebuild(|c| {
+            c.group == legiontoolkit::capability::Group::Lighting
+                && !matches!(c.kind, legiontoolkit::capability::Kind::ReadOnly)
+        });
+        self.system.rebuild(|c| {
+            c.group == legiontoolkit::capability::Group::System
+                && !matches!(c.kind, legiontoolkit::capability::Kind::ReadOnly)
+        });
 
         self.about = about_page_with(backend, &self.caps.borrow().clone());
 
