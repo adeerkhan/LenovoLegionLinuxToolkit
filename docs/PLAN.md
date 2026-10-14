@@ -487,10 +487,13 @@ Six new tests cover this: a printable capability report, "an available
 capability must return a real value", and range checks on the derived health
 and the coretemp fallback.
 
-**Still outstanding in this phase:** the dashboard still duplicates the thermal
-readings it also shows as a group, where the reference puts the sensor grid at
-the top of the dashboard itself. Choosing between "summary + detail page" and
-"reference layout exactly" is a decision, not a bug — flagged, not decided.
+**Resolved (2026-10-14):** the dashboard duplicates the thermal readings it also
+shows as a group, where the reference puts the sensor grid at the top of the
+dashboard itself. The decision is **the reference layout**: Home now leads with
+the sensor cards (CPU, GPU, Motherboard, Memory, Disk, Battery) and then the
+headline controls under titled, two-column sections (Power, Graphics, Lighting).
+The firmware power limits and the rest stay on their own pages, so Home is a
+dashboard rather than a dump of every capability.
 
 **M3 — Profiles & automation.** Named profiles, AC↔battery switching, the small
 trigger/step engine.
