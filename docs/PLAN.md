@@ -637,12 +637,25 @@ Ordered by how much of the application stops being empty.
    Instant Boot toggles, all module-gated and support-probed. **Boot logo is
    deferred**: it is an EFI-variable/ESP feature in LLL, not a sysfs control,
    and needs its own design.
-3. **Automation (M3)** — the reference's Actions page: triggers (AC/battery,
-   power profile, time/periodic) and steps derived from the capability list,
-   persisted like presets.
-4. **Settings parity and a background/tray presence** — the reference's
-   remaining categories, autorun, minimisation, notifications/OSD. Several of
-   these are what make `start_minimized` and automation coherent.
-5. **Packaging (M5)** — RPM/COPR, DEB, AUR, plus the no-password polkit option.
-6. **Hardware validation** — load the out-of-tree module and validate writes
-   conservatively, one capability at a time.
+3. ✅ **Automation (M3)** *(done 2026-10-14)* — a pipeline is a trigger plus
+   capability-derived steps, applied through the same privileged path as the
+   dashboard controls and persisted like presets. Triggers: AC connected, on
+   battery, periodic, power-mode-changed, all edge-detected. Steps are chosen
+   from the capabilities the machine can actually write, so an unwritable
+   control cannot become a step. `src/automation.rs` is pure and unit-tested;
+   the window drives it from its one-second tick.
+4. ✅ **Background presence** *(done 2026-10-14, partial)* — Start on Login (an
+   XDG autostart entry), Minimize on Close (keep running in the background), a
+   Quit menu, and notifications via `notify-send`. **Not done: a system-tray
+   icon.** There is no StatusNotifierItem, so the README deliberately makes no
+   tray claim; minimise-on-close reopens by relaunching the application.
+5. ✅ **Packaging (M5)** *(RPM verified 2026-10-14)* — `packaging/rpm` with a
+   `make rpm` target that builds and was checked end-to-end on Fedora 44;
+   `packaging/debian` and `packaging/aur` delegating to the same `install.sh`.
+   `install.sh` gained `DESTDIR` staging. The no-password polkit option exists
+   for a manual install. Submitting to COPR is an operational step left to the
+   maintainer.
+6. ⏳ **Hardware validation** — the module builds against the running kernel
+   (vermagic matches) and its sysfs names match the resolver. **Loading it and
+   writing are not done**: they need root and touch the EC. The procedure is
+   written up in `docs/hardware-validation.md` to be run at the machine.

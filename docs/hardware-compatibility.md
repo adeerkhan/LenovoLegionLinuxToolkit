@@ -312,9 +312,12 @@ So the routes and why each fails:
 
 ## What to run
 
+The full sequence — load, read-only checks, then writes safest-first — is in
+**[docs/hardware-validation.md](hardware-validation.md)**. The short version:
+
 ```sh
 cd Reference/LenovoLegionLinux/kernel_module
-make                          # already verified to build
+make                          # verified to build on 7.2.9-200.fc44
 sudo make reloadmodule        # loads it and prints dmesg
 ```
 

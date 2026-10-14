@@ -7,7 +7,7 @@ desktop application its native look and behaviour, so this reads as a
 first-class citizen of the GNOME desktop rather than a port of a Windows
 application.
 
-**[Project plan](docs/PLAN.md)** · **[Hardware compatibility](docs/hardware-compatibility.md)** · **[Architecture](docs/architecture.md)**
+**[Project plan](docs/PLAN.md)** · **[Hardware compatibility](docs/hardware-compatibility.md)** · **[Architecture](docs/architecture.md)** · **[Hardware validation](docs/hardware-validation.md)**
 
 ---
 
@@ -23,6 +23,7 @@ A dashboard that shows what your laptop can actually do, and lets you control it
 | **Lighting**   | Keyboard backlight, Y-logo light, IO-port light |
 | **Battery**    | Charge level and status, battery mode (normal / conservation / rapid) |
 | **System**     | Fn-lock, touchpad, camera power, always-on USB charging, Windows-key lock, Instant Boot |
+| **Automation** | Pipelines that apply settings on AC/battery, a timer, or a power-mode change |
 
 Readings are unprivileged. Individual writes escalate through polkit to a small
 helper binary, so the application itself never runs as root.
