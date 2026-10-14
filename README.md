@@ -24,8 +24,7 @@ A dashboard that shows what your laptop can actually do, and lets you control it
 | **System**     | Fn-lock, touchpad, camera power, always-on USB charging |
 
 Readings are unprivileged. Individual writes escalate through polkit to a small
-helper binary, so the application itself never runs as root — which keeps the
-tray icon and desktop notifications working.
+helper binary, so the application itself never runs as root.
 
 ### Capability-first, not model-first
 
@@ -43,7 +42,8 @@ itself available — there is no `match model` anywhere in the presentation laye
 
 ## Requirements
 
-- Linux with GTK 4.12 or newer and libadwaita 1.4 or newer
+- Linux with **GTK 4.22 or newer and libadwaita 1.9 or newer** — the versions
+  the `gtk4`/`libadwaita` crates are pinned to (Fedora 44 ships both)
 - The `legion_laptop` kernel module (`LenovoLegionLinux`) for full control
 - `polkit` for privileged writes
 
@@ -91,9 +91,7 @@ sudo apt install \
 
 ### Arch Linux
 
-```sh
-yay -S legiontoolkit
-```
+Not packaged yet — use `make install` below. An AUR `PKGBUILD` is planned.
 
 ### From a distribution package
 
@@ -109,10 +107,24 @@ the correct answer, so that is where the effort goes.
 ### Hardware permissions
 
 Reading hardware needs no special permissions. Writing does, and the
-application handles it by escalating per write.
+application handles it by escalating per write: the first write in a session
+prompts for your password, and polkit remembers the authorisation for the rest
+of the session (`auth_admin_keep`).
 
-To let the keyboard backlight be controlled without a password prompt, install
-the udev rule (optional — the application falls back to prompting):
+To remove the prompt entirely for a user sitting at the machine, install the
+no-password polkit rule:
+
+```sh
+sudo make install LEGIONTOOLKIT_NO_PASSWORD=1
+```
+
+That installs `49-legiontoolkit.rules`, which lets an `active` and `local`
+session use the helper without authenticating. It grants nothing beyond the
+capabilities this application already exposes — the helper's allowlist and its
+destination-root check still apply — and it is reversible by deleting the file.
+
+Alternatively, a udev rule can grant group write on the keyboard-backlight
+attribute alone:
 
 ```sh
 # /etc/udev/rules.d/99-legion-toolkit.rules

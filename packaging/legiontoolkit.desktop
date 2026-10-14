@@ -11,7 +11,5 @@ Categories=Settings;HardwareSettings;Utility;
 Keywords=Legion;Lenovo;laptop;fan;thermal;battery;rgb;power;
 StartupNotify=true
 
-# Runs unprivileged. Individual writes escalate to
-# /usr/libexec/legiontoolkit-helper via pkexec, so the process itself never
-# needs root — which keeps the tray icon and desktop notifications working,
-# unlike running the whole GUI as root.
+# Runs unprivileged. Individual writes escalate to the installed
+# legiontoolkit-helper via pkexec, so the process itself never needs root.
