@@ -130,6 +130,10 @@ pub struct CapabilityPage {
     caps: Rc<RefCell<Vec<Arc<Capability>>>>,
     prelude: Option<ExtraSection>,
     extra: Option<ExtraSection>,
+    /// When set, the page renders these titled sections instead of one flat
+    /// list. This is the dashboard layout the reference's landing page uses:
+    /// a heading, then the cards for that group side by side.
+    sections: Option<Vec<(&'static str, &'static [&'static str])>>,
 }
 
 impl CapabilityPage {
@@ -140,7 +144,14 @@ impl CapabilityPage {
             caps,
             prelude: None,
             extra: None,
+            sections: None,
         }
+    }
+
+    /// Render the page as titled sections rather than one flat list.
+    fn with_sections(mut self, sections: Vec<(&'static str, &'static [&'static str])>) -> Self {
+        self.sections = Some(sections);
+        self
     }
 
     /// Add a section drawn *before* the capability cards.
@@ -179,29 +190,53 @@ impl CapabilityPage {
         }
 
         self.cards.borrow_mut().clear();
-        let capabilities: Vec<Arc<Capability>> = self
-            .caps
-            .borrow()
-            .iter()
-            .filter(|cap| filter(cap))
-            .cloned()
-            .collect();
 
         // A page shows the controls this machine actually has. The reference
         // hides unsupported controls entirely, and the reason is now obvious:
         // with thirteen permanently-unavailable capabilities, listing them all
         // buries the ones that work. What is missing is stated once, at the
         // bottom, and enumerated in full on the About page.
-        let mut unavailable: Vec<&Arc<Capability>> = Vec::new();
-        for cap in &capabilities {
-            if !cap.is_available() {
-                unavailable.push(cap);
-                continue;
+        let mut unavailable: Vec<Arc<Capability>> = Vec::new();
+
+        if let Some(sections) = self.sections.clone() {
+            for (title, keys) in sections {
+                let grid = self.section_grid();
+                let mut shown = 0i32;
+                for key in keys {
+                    let cap = self.caps.borrow().iter().find(|c| c.key == *key).cloned();
+                    let Some(cap) = cap else { continue };
+                    if !cap.is_available() {
+                        unavailable.push(cap);
+                        continue;
+                    }
+                    let card = FeatureCard::new(Arc::clone(&cap));
+                    card.gtk_widget().set_hexpand(true);
+                    grid.attach(card.gtk_widget(), shown % 2, shown / 2, 1, 1);
+                    card.connect_controls(self.page.contents.clone().upcast::<gtk4::Widget>());
+                    self.cards.borrow_mut().push(card);
+                    shown += 1;
+                }
+                // Only title a section that has something in it.
+                if shown > 0 {
+                    self.page.heading(title);
+                    self.page.append(&grid);
+                }
             }
-            let card = FeatureCard::new(Arc::clone(cap));
-            self.page.append(card.gtk_widget());
-            card.connect_controls(self.page.contents.clone().upcast::<gtk4::Widget>());
-            self.cards.borrow_mut().push(card);
+        } else {
+            let capabilities: Vec<Arc<Capability>> = self
+                .caps
+                .borrow()
+                .iter()
+                .filter(|cap| filter(cap))
+                .cloned()
+                .collect();
+            for cap in &capabilities {
+                if !cap.is_available() {
+                    unavailable.push(Arc::clone(cap));
+                    continue;
+                }
+                self.push_card(cap);
+            }
         }
 
         if !unavailable.is_empty() {
@@ -241,6 +276,26 @@ impl CapabilityPage {
         for card in self.cards.borrow().iter() {
             card.refresh();
         }
+    }
+
+    /// A two-column grid for a section's cards, matching the reference's
+    /// landing-page layout.
+    fn section_grid(&self) -> gtk4::Grid {
+        let grid = gtk4::Grid::new();
+        grid.set_column_homogeneous(true);
+        grid.set_column_spacing(8);
+        grid.set_row_spacing(8);
+        grid.set_valign(gtk4::Align::Start);
+        grid
+    }
+
+    /// Append one capability's card to the page's own column and register it
+    /// for refresh.
+    fn push_card(&mut self, cap: &Arc<Capability>) {
+        let card = FeatureCard::new(Arc::clone(cap));
+        self.page.append(card.gtk_widget());
+        card.connect_controls(self.page.contents.clone().upcast::<gtk4::Widget>());
+        self.cards.borrow_mut().push(card);
     }
 
     /// Re-read the cards, but only while the page is on screen.
@@ -293,16 +348,26 @@ impl Pages {
             // group, which is the reference's dashboard layout. The grid's cards
             // are registered into `thermal_cards` so the refresh loop reaches
             // them without knowing which page they are on.
-            home: CapabilityPage::new(
-                |page| {
-                    page.heading("Home");
-                },
-                Rc::clone(&caps),
-            )
-            .with_prelude({
-                let out = Rc::clone(&landing_grid);
-                move |page, _caps| append_sensor_grid(page, &out)
-            }),
+            // The landing page leads with the sensor grid, then the reference's
+            // dashboard sections — the headline controls only, not every
+            // capability. The firmware power limits and the rest live on their
+            // own pages.
+            home: CapabilityPage::new(|_| {}, Rc::clone(&caps))
+                .with_prelude({
+                    let out = Rc::clone(&landing_grid);
+                    move |page, _caps| append_sensor_grid(page, &out)
+                })
+                .with_sections(vec![
+                    (
+                        "Power",
+                        &["powermode", "battery_mode", "fan_fullspeed", "usb_charging"],
+                    ),
+                    ("Graphics", &["igpumode", "gsync"]),
+                    (
+                        "Lighting",
+                        &["kbd_backlight", "ylogo_light", "ioport_light"],
+                    ),
+                ]),
             battery: BatteryPage::new(),
             power: CapabilityPage::new(
                 |page| {
@@ -475,12 +540,14 @@ struct ThermalCards {
     cpu_rows: Vec<(usize, &'static str)>,
     gpu: Rc<SensorCard>,
     gpu_rows: Vec<(usize, &'static str)>,
-    fans: Rc<SensorCard>,
-    fan_rows: Vec<(usize, &'static str)>,
+    board: Rc<SensorCard>,
+    board_rows: Vec<(usize, &'static str)>,
     memory: Rc<SensorCard>,
     memory_rows: Vec<(usize, &'static str)>,
     disk: Rc<SensorCard>,
     disk_rows: Vec<(usize, &'static str)>,
+    battery: Rc<SensorCard>,
+    battery_rows: Vec<(usize, &'static str)>,
 }
 
 /// Append the sensor grid to a page and register its cards for refreshing.
@@ -540,18 +607,18 @@ fn append_sensor_grid(page: &mut Page, out: &ThermalGrid) {
             (gpu.add_row("Memory", "MiB", 0, 8192.0), "gpu_memory"),
         ];
 
-        let mut fans = SensorCard::new("Fans");
-        let mut fan_rows = Vec::new();
-        for (key, label) in [
-            ("fan1_rpm", "CPU Fan"),
-            ("fan2_rpm", "GPU Fan"),
-            ("fan3_rpm", "Auxiliary Fan"),
-            ("fan4_rpm", "Fourth Fan"),
-        ] {
-            // Precision 0: revolutions are whole numbers, and the loop index
-            // was being passed here by mistake, printing "3300.0 rpm".
-            fan_rows.push((fans.add_row(label, "rpm", 0, 6000.0), key));
-        }
+        // The reference's motherboard card carries the fans and the chipset
+        // (PCH) temperature; on Linux both come from the legion module once it
+        // is loaded, and the rows stay blank until then.
+        let mut board = SensorCard::new("Motherboard");
+        let board_rows = vec![
+            (board.add_row("CPU Fan", "rpm", 0, 6000.0), "fan1_rpm"),
+            (board.add_row("GPU Fan", "rpm", 0, 6000.0), "fan2_rpm"),
+            (
+                board.add_row("IC Temperature", "\u{00b0}C", 0, 110.0),
+                "ic_temp",
+            ),
+        ];
 
         let mut memory = SensorCard::new("Memory");
         let memory_rows = vec![
@@ -571,25 +638,34 @@ fn append_sensor_grid(page: &mut Page, out: &ThermalGrid) {
             ),
         ];
 
+        let mut battery = SensorCard::new("Battery");
+        let battery_rows = vec![
+            (battery.add_row("State", "", 0, 100.0), "battery_state"),
+            (battery.add_row("Level", "%", 0, 100.0), "battery_capacity"),
+        ];
+
         let cards = Rc::new(ThermalCards {
             cpu: Rc::new(cpu),
             cpu_rows,
             gpu: Rc::new(gpu),
             gpu_rows,
-            fans: Rc::new(fans),
-            fan_rows,
+            board: Rc::new(board),
+            board_rows,
             memory: Rc::new(memory),
             memory_rows,
             disk: Rc::new(disk),
             disk_rows,
+            battery: Rc::new(battery),
+            battery_rows,
         });
 
         for card in [
             &cards.cpu,
             &cards.gpu,
-            &cards.fans,
+            &cards.board,
             &cards.memory,
             &cards.disk,
+            &cards.battery,
         ] {
             grid.insert(card.widget().upcast_ref::<gtk4::Widget>(), -1);
         }
@@ -623,6 +699,15 @@ fn refresh_thermal(
                 _ => None,
             })
     };
+    let text = |key: &str| {
+        caps.iter()
+            .find(|c| c.key == *key)
+            .and_then(|c| c.read().ok())
+            .and_then(|v| match v {
+                Value::Text(t) => Some(t),
+                _ => None,
+            })
+    };
 
     for (row, key) in cards.cpu_rows.iter() {
         cards.cpu.set_value(*row, value(key));
@@ -630,8 +715,8 @@ fn refresh_thermal(
     for (row, key) in cards.gpu_rows.iter() {
         cards.gpu.set_value(*row, value(key));
     }
-    for (row, key) in cards.fan_rows.iter() {
-        cards.fans.set_value(*row, value(key));
+    for (row, key) in cards.board_rows.iter() {
+        cards.board.set_value(*row, value(key));
     }
     // The reference's RAM card reads "Utilization  10.8/15.7 GB": the absolute
     // in the label, the percentage in the meter.
@@ -650,6 +735,16 @@ fn refresh_thermal(
     }
     for (row, key) in cards.disk_rows.iter() {
         cards.disk.set_value(*row, value(key));
+    }
+    for (row, key) in cards.battery_rows.iter() {
+        // "Charging" is a word, not a number, so it goes through the text path.
+        if *key == "battery_state" {
+            if let Some(state) = text(key) {
+                cards.battery.set_text(*row, 0.0, &state);
+            }
+            continue;
+        }
+        cards.battery.set_value(*row, value(key));
     }
 }
 
