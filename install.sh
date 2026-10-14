@@ -18,19 +18,23 @@ set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 PREFIX="${PREFIX:-/usr/local}"
+# A package build stages into an empty root: every install destination is
+# prefixed with DESTDIR. HELPER_PATH is deliberately not, because it is the path
+# the running system uses and the one polkit's action must name.
+DESTDIR="${DESTDIR:-}"
 
 # Mirrored in the Makefile.
-BINDIR="$PREFIX/bin"
-LIBEXECDIR="$PREFIX/libexec"
-DESKTOPDIR="$PREFIX/share/applications"
-ICONTHEMEDIR="$PREFIX/share/icons/hicolor"
-POLKITDIR="$PREFIX/share/polkit-1/actions"
+BINDIR="$DESTDIR$PREFIX/bin"
+LIBEXECDIR="$DESTDIR$PREFIX/libexec"
+DESKTOPDIR="$DESTDIR$PREFIX/share/applications"
+ICONTHEMEDIR="$DESTDIR$PREFIX/share/icons/hicolor"
+POLKITDIR="$DESTDIR$PREFIX/share/polkit-1/actions"
 HELPER_PATH="$PREFIX/libexec/legiontoolkit-helper"
 
 # Polkit reads rules only from fixed directories under /etc and /usr/share, so
 # this one is absolute rather than derived from PREFIX — a rule under
 # /usr/local/etc would simply never be read.
-POLKITRULESDIR="/etc/polkit-1/rules.d"
+POLKITRULESDIR="$DESTDIR/etc/polkit-1/rules.d"
 
 POLICY="org.legiontoolkit.helper.policy"
 BINARIES="legiontoolkit legiontoolkit-helper legiontoolkit-keyboard-probe"

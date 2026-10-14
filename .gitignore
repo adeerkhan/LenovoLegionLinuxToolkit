@@ -498,6 +498,10 @@ FodyWeavers.xsd
 /Reference/
 
 
+# Packaging artifacts (the source tarball `make rpm` writes).
+/packaging/rpm/*.tar.gz
+
+
 # --- Rust -------------------------------------------------------------------
 /target
 Cargo.lock is committed for a binary: reproducible builds matter more than the

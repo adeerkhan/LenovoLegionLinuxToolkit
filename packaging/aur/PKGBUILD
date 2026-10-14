@@ -1,0 +1,25 @@
+# Maintainer: Adeer Khan <adeerkhan@users.noreply.github.com>
+pkgname=legiontoolkit
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Native GTK4/libadwaita control panel for Lenovo Legion laptops"
+arch=('x86_64' 'aarch64')
+url="https://github.com/adeerkhan/LenovoLegionLinuxToolkit"
+license=('GPL-3.0-or-later')
+depends=('gtk4' 'libadwaita' 'polkit')
+makedepends=('cargo' 'rust')
+options=('!strip')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+  cd "$pkgname-$pkgver"
+  # The Makefile builds the helper without GTK and bakes the helper path in
+  # from PREFIX, so the prefix must be the installed one.
+  make build PREFIX=/usr
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  DESTDIR="$pkgdir" make install PREFIX=/usr
+}

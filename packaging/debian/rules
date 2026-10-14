@@ -1,0 +1,26 @@
+#!/usr/bin/make -f
+# Debian package build.
+#
+# The upstream Makefile owns the build and the install layout; install.sh
+# derives every destination from PREFIX and DESTDIR, so this file only has to
+# point it at the standard locations.
+
+export DESTDIR = $(CURDIR)/debian/legiontoolkit
+export PREFIX = /usr
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	$(MAKE) build
+
+override_dh_auto_install:
+	./install.sh install
+
+override_dh_auto_clean:
+	$(MAKE) clean
+
+# The upstream test suite is the project's own gate; run it as the build's
+# check step.
+override_dh_auto_test:
+	cargo test --lib --no-default-features

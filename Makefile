@@ -13,13 +13,16 @@
 PREFIX      ?= /usr/local
 HELPER_PATH ?= $(PREFIX)/libexec/legiontoolkit-helper
 
+# Read by the `rpm` target; kept in step with Cargo.toml.
+VERSION     ?= $(shell sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+
 # Set to 1 to install the polkit rule that lets an active, local session use the
 # helper without a password prompt: `sudo make install LEGIONTOOLKIT_NO_PASSWORD=1`.
 LEGIONTOOLKIT_NO_PASSWORD ?=
 
 CARGO      ?= cargo
 
-.PHONY: all check build install uninstall clean distcheck icon
+.PHONY: all check build install uninstall clean distcheck icon rpm
 
 all: build
 build:
@@ -51,6 +54,18 @@ uninstall:
 
 icon:
 	python3 packaging/make-icon.py
+
+# Build an RPM. The source is archived from git, so rpmbuild sees exactly a
+# commit; the spec runs the same Makefile inside that tree. Run `git add` first
+# — uncommitted files are not in the archive.
+rpm:
+	@test -n "$(VERSION)" || { echo "could not read version from Cargo.toml"; exit 1; }
+	@git diff --quiet || echo "warning: packaging from HEAD; uncommitted changes are not included"
+	git archive --prefix=legiontoolkit-$(VERSION)/ -o packaging/rpm/legiontoolkit-$(VERSION).tar.gz HEAD
+	rpmbuild -bb packaging/rpm/legiontoolkit.spec \
+	    --define "_topdir $(CURDIR)/target/rpmbuild" \
+	    --define "_sourcedir $(CURDIR)/packaging/rpm"
+	@echo "RPM written under target/rpmbuild/RPMS/"
 
 # Prints where things will land, without touching the system or compiling.
 # The fast way to sanity-check a PREFIX override before committing to it.

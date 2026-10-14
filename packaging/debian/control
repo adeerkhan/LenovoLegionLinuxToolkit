@@ -1,0 +1,34 @@
+Source: legiontoolkit
+Section: utils
+Priority: optional
+Maintainer: Adeer Khan <adeerkhan@users.noreply.github.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ cargo,
+ rustc,
+ libgtk-4-dev,
+ libadwaita-1-dev,
+ libpango1.0-dev,
+ libgdk-pixbuf-2.0-dev,
+ libcairo2-dev,
+ libgraphene-1.0-dev,
+Standards-Version: 4.6.2
+Rules-Requires-Root: binary-targets
+Homepage: https://github.com/adeerkhan/LenovoLegionLinuxToolkit
+
+Package: legiontoolkit
+Architecture: any
+Depends:
+ ${misc:Depends},
+ polkit,
+ libgtk-4-1,
+ libadwaita-1-0,
+Description: Native control panel for Lenovo Legion laptops
+ A GTK 4 / libadwaita control panel for Lenovo Legion laptops: power modes,
+ thermals and fan speed, GPU working mode, lighting, battery charging mode, and
+ automation.
+ .
+ Reads are unprivileged; each write escalates through polkit to a small helper
+ binary, so the application itself never runs as root. The package builds
+ against GTK 4.22 / libadwaita 1.9, which Ubuntu ships from 25.10 (questing)
+ onward.
