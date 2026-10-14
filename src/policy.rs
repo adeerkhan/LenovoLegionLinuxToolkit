@@ -24,6 +24,7 @@ pub const HELPER_WRITABLE: &[&str] = &[
     "ylogo_light",
     "ioport_light",
     "battery_mode",
+    "battery_charge_limit",
     "rapid_charge",
     "igpumode",
     "gsync",

@@ -887,6 +887,38 @@ impl Backend for SysfsBackend {
             }
         }
 
+        // A stop-charging threshold, where the kernel exposes one. Absent on
+        // machines whose firmware offers only charge types (this one), so the
+        // control is simply not shown there rather than faked.
+        if let Some(path) = paths::battery_charge_limit() {
+            let read_path = path.clone();
+            caps.push(
+                Builder::new("battery_charge_limit", Kind::Slider, Group::Battery)
+                    .label("Charge Limit")
+                    .icon("battery-symbolic")
+                    .unit("%")
+                    .limits(Limits {
+                        min: 50.0,
+                        max: 100.0,
+                        step: 5.0,
+                    })
+                    .note("Stop charging at this level.")
+                    .read(move || {
+                        Ok(Value::Float(
+                            read_trim(&read_path)?.parse().unwrap_or(100.0),
+                        ))
+                    })
+                    .write(|v| {
+                        crate::services::privilege::request(
+                            "battery_charge_limit",
+                            &v.to_string(),
+                        )?;
+                        Ok(())
+                    })
+                    .build(),
+            );
+        }
+
         // ---- System -------------------------------------------------------
         for (key, label, icon) in [
             ("fn_lock", "Fn Lock", "input-keyboard-symbolic"),

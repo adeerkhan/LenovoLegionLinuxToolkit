@@ -175,6 +175,8 @@ impl SysPaths {
             // is the standard Linux interface the three-way Battery Mode is
             // built on, and it needs no Legion driver.
             "battery_mode" => battery_charge_types()?,
+            // A stop-charging threshold, where the kernel exposes one.
+            "battery_charge_limit" => battery_charge_limit()?,
 
             // --- legion_laptop module: GPU and system toggles ---------------
             // Each exists only once the out-of-tree module is loaded, so
@@ -372,6 +374,15 @@ pub fn battery_time_hours() -> Option<(f64, bool)> {
 /// needs no software interlock.
 pub fn battery_charge_types() -> Option<PathBuf> {
     let path = battery_dir()?.join("charge_types");
+    path.exists().then_some(path)
+}
+
+/// The battery's stop-charging threshold, where the kernel exposes one.
+///
+/// This machine does not: it offers only `charge_types`. Machines that report
+/// `charge_control_end_threshold` get a "charge to N%" control from it.
+pub fn battery_charge_limit() -> Option<PathBuf> {
+    let path = battery_dir()?.join("charge_control_end_threshold");
     path.exists().then_some(path)
 }
 
