@@ -562,8 +562,12 @@ impl Backend for SysfsBackend {
                     },
                 ]);
             if exists {
-                let p = path.unwrap();
-                b = b.read(move || Ok(Value::Text(read_trim(&p)?)));
+                let read_path = path.unwrap();
+                b = b.read(move || Ok(Value::Text(read_trim(&read_path)?)));
+                b = b.write(|v| {
+                    crate::services::privilege::request("kbd_backlight", &v.to_string())?;
+                    Ok(())
+                });
             } else {
                 b = b.unavailable("Requires the legion_laptop driver");
             }
@@ -1198,6 +1202,28 @@ mod tests {
         // An unreadable probe must not suppress the control.
         assert!(support_value_says_yes(""));
         assert!(support_value_says_yes("nonsense"));
+    }
+
+    /// A capability that renders as a control must be able to write.
+    ///
+    /// A switch or dropdown that draws but does nothing is the worst failure a
+    /// control panel has, and `kbd_backlight` was exactly that: it declared a
+    /// read closure and no write, so the Lighting page drew a working-looking
+    /// dropdown whose handler was never connected. This test is the guard.
+    #[test]
+    fn available_controls_are_writable() {
+        for cap in SysfsBackend::new().capabilities() {
+            if !cap.is_available() {
+                continue;
+            }
+            if matches!(cap.kind, Kind::Toggle | Kind::Enum | Kind::Slider) {
+                assert!(
+                    cap.can_write(),
+                    "{} renders a control but cannot write",
+                    cap.key
+                );
+            }
+        }
     }
 
     /// Every icon a capability declares must be one the theme can draw.
