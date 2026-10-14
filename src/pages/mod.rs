@@ -385,7 +385,13 @@ impl Pages {
                     ),
                 ]),
             battery: BatteryPage::new(),
-            power: CapabilityPage::new(|_| {}, Rc::clone(&caps)).with_extra(|page, caps| {
+            power: CapabilityPage::new(
+                |page| {
+                    page.heading("Power");
+                },
+                Rc::clone(&caps),
+            )
+            .with_extra(|page, caps| {
                 // The presets editor belongs on the Power page, next to the
                 // limits it stores.
                 let card = presets_section(Rc::clone(caps));
@@ -394,7 +400,13 @@ impl Pages {
             // The Processors page is the controls only, grouped. The telemetry
             // (temperatures, clocks, utilization) lives in the Home sensor row;
             // repeating it here is exactly the duplication to avoid.
-            processors: CapabilityPage::new(|_| {}, Rc::clone(&caps)).with_sections(vec![
+            processors: CapabilityPage::new(
+                |page| {
+                    page.heading("Processors & GPU");
+                },
+                Rc::clone(&caps),
+            )
+            .with_sections(vec![
                 (
                     "Power Limits",
                     Rc::new(|c: &Capability| c.key.starts_with("firmware:")),
@@ -404,8 +416,18 @@ impl Pages {
                     Rc::new(|c: &Capability| matches!(c.key.as_str(), "igpumode" | "gsync")),
                 ),
             ]),
-            lighting: CapabilityPage::new(|_| {}, Rc::clone(&caps)),
-            system: CapabilityPage::new(|_| {}, Rc::clone(&caps)),
+            lighting: CapabilityPage::new(
+                |page| {
+                    page.heading("Lighting");
+                },
+                Rc::clone(&caps),
+            ),
+            system: CapabilityPage::new(
+                |page| {
+                    page.heading("System");
+                },
+                Rc::clone(&caps),
+            ),
             about: about_page(),
             // Built once, in `rebuild`, like every other page. Constructing it
             // here as well built and discarded a full widget tree.

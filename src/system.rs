@@ -408,6 +408,9 @@ fn read_number(path: &Path) -> Option<f64> {
 fn attribute_unit(name: &str) -> Option<&'static str> {
     if name.starts_with("ppt_") || name.starts_with("gpu_nv") {
         Some("W")
+    } else if name.ends_with("_temp") {
+        // `cpu_temp` / `gpu_temp` are the firmware's thermal limits, in °C.
+        Some("\u{00b0}C")
     } else {
         None
     }

@@ -193,8 +193,23 @@ impl FeatureCard {
         let spin = SpinButton::with_range(limits.min, limits.max, limits.step);
         spin.set_halign(Align::End);
         spin.set_valign(Align::Center);
-        self.card.set_accessory(&spin);
-        self.spin = Some(spin);
+        self.spin = Some(spin.clone());
+
+        // A bare number is not a value. Show the unit beside the control so
+        // "97" reads as "97 °C", as the reference does.
+        match cap.unit {
+            Some(unit) => {
+                let group = gtk4::Box::new(Orientation::Horizontal, 6);
+                group.set_valign(Align::Center);
+                group.append(&spin);
+                let unit_label = Label::new(Some(unit));
+                unit_label.add_css_class("llt-card-subtitle");
+                unit_label.set_valign(Align::Center);
+                group.append(&unit_label);
+                self.card.set_accessory(&group);
+            }
+            None => self.card.set_accessory(&spin),
+        }
     }
 
     /// Connect the controls to their capability.
