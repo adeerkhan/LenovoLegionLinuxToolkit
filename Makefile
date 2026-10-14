@@ -13,6 +13,10 @@
 PREFIX      ?= /usr/local
 HELPER_PATH ?= $(PREFIX)/libexec/legiontoolkit-helper
 
+# Set to 1 to install the polkit rule that lets an active, local session use the
+# helper without a password prompt: `sudo make install LEGIONTOOLKIT_NO_PASSWORD=1`.
+LEGIONTOOLKIT_NO_PASSWORD ?=
+
 CARGO      ?= cargo
 
 .PHONY: all check build install uninstall clean distcheck icon
@@ -40,7 +44,7 @@ check:
 	$(CARGO) test --no-default-features
 
 install: build
-	./install.sh install
+	LEGIONTOOLKIT_NO_PASSWORD='$(LEGIONTOOLKIT_NO_PASSWORD)' ./install.sh install
 
 uninstall:
 	./install.sh uninstall

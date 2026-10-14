@@ -27,6 +27,11 @@ ICONTHEMEDIR="$PREFIX/share/icons/hicolor"
 POLKITDIR="$PREFIX/share/polkit-1/actions"
 HELPER_PATH="$PREFIX/libexec/legiontoolkit-helper"
 
+# Polkit reads rules only from fixed directories under /etc and /usr/share, so
+# this one is absolute rather than derived from PREFIX — a rule under
+# /usr/local/etc would simply never be read.
+POLKITRULESDIR="/etc/polkit-1/rules.d"
+
 POLICY="org.legiontoolkit.helper.policy"
 BINARIES="legiontoolkit legiontoolkit-helper legiontoolkit-keyboard-probe"
 ICON_SIZES="16 22 24 32 48 64 128 256 512"
@@ -107,6 +112,15 @@ if [ "$mode" = install ]; then
     render_policy > "$tmp_policy"
     install -Dm644 "$tmp_policy" "$POLKITDIR/$POLICY"
 
+    # Optional: let an active, local session use the helper without a password.
+    # Off by default; enabled with `make install LEGIONTOOLKIT_NO_PASSWORD=1`.
+    # This grants the org.legiontoolkit.helper action and nothing else, and the
+    # helper still enforces its own allowlist and destination-root check.
+    if [ "${LEGIONTOOLKIT_NO_PASSWORD:-}" = "1" ]; then
+        install -Dm644 "$here/packaging/49-legiontoolkit-no-password.rules" \
+                          "$POLKITRULESDIR/49-legiontoolkit.rules"
+    fi
+
     # Best effort: without these the entry and icon can linger until the next
     # login, and a missing tool is not a reason to fail the install.
     if command -v update-desktop-database >/dev/null; then
@@ -122,12 +136,19 @@ if [ "$mode" = install ]; then
     echo "  policy     $POLKITDIR/$POLICY"
     echo "  desktop    $DESKTOPDIR"
     echo "  icons      $ICONTHEMEDIR"
+    if [ "${LEGIONTOOLKIT_NO_PASSWORD:-}" = "1" ]; then
+        echo "  no-password rule $POLKITRULESDIR/49-legiontoolkit.rules"
+    fi
 else
     rm -f "$BINDIR/legiontoolkit" \
           "$LIBEXECDIR/legiontoolkit-helper" \
           "$BINDIR/legiontoolkit-keyboard-probe" \
           "$DESKTOPDIR/legiontoolkit.desktop" \
           "$POLKITDIR/$POLICY"
+    # The no-password rule lives under /etc, outside PREFIX, and removing it
+    # needs root. Failing to remove it (a non-root uninstall) must not abort the
+    # rest of the uninstall.
+    rm -f "$POLKITRULESDIR/49-legiontoolkit.rules" 2>/dev/null || true
     rm -f "$ICONTHEMEDIR"/*/apps/legiontoolkit.png
     echo "removed from $PREFIX"
 fi
