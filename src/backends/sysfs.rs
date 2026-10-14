@@ -169,6 +169,19 @@ impl SysfsBackend {
             "Not supported by this model"
         }
     }
+
+    /// Whether the module's support probe for a control says yes.
+    ///
+    /// `issupportigpumode` / `issupportgsync` exist on every model but report
+    /// `0` where the firmware has no such control, so probing them keeps a dead
+    /// toggle off a machine that cannot use it. A missing or unreadable probe
+    /// does not suppress the control.
+    fn legion_supports(&self, attr: &str) -> bool {
+        match self.paths.file(attr).and_then(|p| read_trim(&p).ok()) {
+            Some(value) => value == "1",
+            None => true,
+        }
+    }
 }
 
 impl Default for SysfsBackend {
@@ -783,13 +796,80 @@ impl Backend for SysfsBackend {
             );
         }
 
-        caps.push(self.toggle_cap(
-            "battery_conservation",
-            "Battery Conservation",
-            "battery-symbolic",
-            Group::Battery,
-            Some("Disables rapid charging"),
-        ));
+        // ---- Battery charging mode ---------------------------------------
+        //
+        // Prefer the kernel's native `charge_types` interface: it lists every
+        // accepted charge type with the current one bracketed, and the kernel
+        // enforces the Fast/Long_Life exclusivity, so the three-way control
+        // needs no software interlock. Only when that interface is absent do we
+        // fall back to the ideapad conservation toggle and, if the module is
+        // loaded, its rapid-charge toggle.
+        let charge_types = paths::battery_charge_types();
+        let parsed = charge_types
+            .as_ref()
+            .and_then(|p| read_trim(p).ok())
+            .map(|raw| paths::parse_charge_types(&raw));
+
+        match (charge_types, parsed) {
+            (Some(path), Some(parsed)) if !parsed.values.is_empty() => {
+                let values: Vec<NamedValue> = parsed
+                    .values
+                    .iter()
+                    .map(|(value, label)| NamedValue {
+                        value: value.clone(),
+                        label: label.clone(),
+                    })
+                    .collect();
+                let read_path = path.clone();
+                caps.push(
+                    Builder::new("battery_mode", Kind::Enum, Group::Battery)
+                        .label("Battery Mode")
+                        .icon("battery-symbolic")
+                        .note(
+                            "Normal charges to full; Conservation holds around 60%; \
+                             Rapid charges fastest.",
+                        )
+                        .values(values)
+                        .read(move || {
+                            let raw = read_trim(&read_path)?;
+                            Ok(Value::Text(
+                                paths::parse_charge_types(&raw).current.unwrap_or_default(),
+                            ))
+                        })
+                        .write(|v| {
+                            crate::services::privilege::request("battery_mode", &v.to_string())?;
+                            Ok(())
+                        })
+                        .build(),
+                );
+            }
+            _ => {
+                caps.push(self.toggle_cap(
+                    "battery_conservation",
+                    "Battery Conservation",
+                    "battery-symbolic",
+                    Group::Battery,
+                    Some("Disables rapid charging"),
+                ));
+
+                // The module adds a rapid-charge toggle, mutually exclusive with
+                // conservation. The driver clears one when the other is set, so
+                // the card says so rather than the UI pretending to enforce it.
+                let mut rapid = self.toggle_cap(
+                    "rapid_charge",
+                    "Rapid Charge",
+                    "battery-symbolic",
+                    Group::Battery,
+                    Some("Enabling this clears battery conservation"),
+                );
+                if rapid.is_available() {
+                    rapid
+                        .warnings
+                        .push("Enabling rapid charge clears battery conservation, and vice versa.");
+                }
+                caps.push(rapid);
+            }
+        }
 
         // ---- System -------------------------------------------------------
         for (key, label, icon) in [
@@ -803,6 +883,91 @@ impl Backend for SysfsBackend {
             ),
         ] {
             caps.push(self.toggle_cap(key, label, icon, Group::System, None));
+        }
+
+        // ---- GPU working mode and hybrid/G-Sync ---------------------------
+        //
+        // These live only in the out-of-tree module's sysfs tree. Without the
+        // module they read "Needs the legion_laptop kernel module"; with it, a
+        // model whose firmware does not back the control says so rather than
+        // offering a toggle that would fail.
+        {
+            let path = self.paths.file("igpumode").filter(|p| p.exists());
+            let mut b = Builder::new("igpumode", Kind::Enum, Group::Processors)
+                .label("GPU Working Mode")
+                .icon("video-display-symbolic")
+                .note("Takes effect after a reboot.")
+                .values(vec![
+                    NamedValue {
+                        value: "0".into(),
+                        label: "Hybrid".into(),
+                    },
+                    NamedValue {
+                        value: "1".into(),
+                        label: "Integrated Only".into(),
+                    },
+                    NamedValue {
+                        value: "2".into(),
+                        label: "Hybrid Auto".into(),
+                    },
+                ]);
+            match path {
+                Some(p) if self.legion_supports("issupportigpumode") => {
+                    let read_path = p.clone();
+                    b = b.read(move || Ok(Value::Text(read_trim(&read_path)?)));
+                    b = b.write(|v| {
+                        crate::services::privilege::request("igpumode", &v.to_string())?;
+                        Ok(())
+                    });
+                }
+                Some(_) => b = b.unavailable("Not supported by this model's firmware"),
+                None => b = b.unavailable(self.reason_for("igpumode")),
+            }
+            caps.push(b.build());
+        }
+
+        // `gsync` is the attribute LLL drives as "Hybrid Mode (sometimes also
+        // G-Sync)", so the label names both.
+        let mut gsync = self.toggle_cap(
+            "gsync",
+            "G-Sync / Hybrid Mode",
+            "video-display-symbolic",
+            Group::Processors,
+            Some("Takes effect after a reboot."),
+        );
+        if gsync.is_available() && !self.legion_supports("issupportgsync") {
+            gsync.unavailable_reason = Some("Not supported by this model's firmware");
+        }
+        caps.push(gsync);
+
+        // ---- Module-gated system toggles ----------------------------------
+        for (key, label, icon, note) in [
+            (
+                "winkey",
+                "Windows Key",
+                "input-keyboard-symbolic",
+                Some("Enable or disable the Windows key."),
+            ),
+            (
+                "overdrive",
+                "Display Overdrive",
+                "video-display-symbolic",
+                None,
+            ),
+            (
+                "instant_boot_ac",
+                "Instant Boot (AC Adapter)",
+                "power-profile-performance-symbolic",
+                Some("Powers the laptop on when the AC adapter is connected."),
+            ),
+            (
+                "instant_boot_usb_pd",
+                "Instant Boot (USB-PD)",
+                "power-profile-performance-symbolic",
+                Some("Powers the laptop on when a USB-PD charger is connected."),
+            ),
+        ] {
+            caps.push(self.toggle_cap(key, label, icon, Group::System, note));
         }
 
         caps
@@ -956,6 +1121,58 @@ mod tests {
             "battery_cycles",
         ] {
             assert!(has(key), "battery page is missing {key}");
+        }
+    }
+
+    /// When the kernel's native charge-type interface is present, the three-way
+    /// Battery Mode replaces the conservation toggle: the control belongs to the
+    /// interface the firmware actually enforces the Fast/Long_Life exclusivity
+    /// on, and having both would be two controls for one state.
+    #[test]
+    fn battery_mode_replaces_conservation_when_charge_types_exists() {
+        let caps = SysfsBackend::new().capabilities();
+        if paths::battery_charge_types().is_none() {
+            return;
+        }
+        let mode = caps
+            .iter()
+            .find(|c| c.key == "battery_mode")
+            .expect("charge_types exists but there is no battery_mode capability");
+        assert!(mode.is_available(), "battery_mode should be available");
+        assert!(
+            !mode.values.is_empty(),
+            "battery_mode has no choices parsed from charge_types"
+        );
+        assert!(
+            !caps.iter().any(|c| c.key == "battery_conservation"),
+            "the conservation toggle must not duplicate battery_mode"
+        );
+        if let Ok(Value::Text(current)) = mode.read() {
+            assert!(
+                mode.values.iter().any(|v| v.value == current),
+                "battery_mode read {current:?}, which is not one of its choices"
+            );
+        }
+    }
+
+    /// The module-gated controls must always be declared, so that with the
+    /// module loaded they appear, and without it they explain the driver
+    /// dependency rather than vanishing.
+    #[test]
+    fn module_gated_controls_are_declared() {
+        let caps = SysfsBackend::new().capabilities();
+        for key in [
+            "igpumode",
+            "gsync",
+            "winkey",
+            "overdrive",
+            "instant_boot_ac",
+            "instant_boot_usb_pd",
+        ] {
+            assert!(
+                caps.iter().any(|c| c.key == key),
+                "module-gated control {key} is not declared"
+            );
         }
     }
 

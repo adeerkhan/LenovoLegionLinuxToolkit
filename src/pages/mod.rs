@@ -611,7 +611,10 @@ pub struct BatteryPage {
     hero_status: Label,
     hero_icon: gtk4::Image,
     rows: Rc<RefCell<Vec<(Label, String)>>>,
-    backend: Rc<RefCell<Vec<Capability>>>,
+    backend: Rc<RefCell<Vec<Arc<Capability>>>>,
+    /// The charging control (the three-way Battery Mode, or the conservation
+    /// fallback), drawn below the hero so it sits with the readings it changes.
+    control: Rc<RefCell<Option<FeatureCard>>>,
 }
 
 impl BatteryPage {
@@ -625,13 +628,16 @@ impl BatteryPage {
             hero_icon: gtk4::Image::new(),
             rows: Rc::new(RefCell::new(Vec::new())),
             backend: Rc::new(RefCell::new(Vec::new())),
+            control: Rc::new(RefCell::new(None)),
         }
     }
 
     fn rebuild(&mut self, backend: &dyn Backend) {
         self.page.clear();
         self.backend.borrow_mut().clear();
-        self.backend.borrow_mut().extend(backend.capabilities());
+        self.backend
+            .borrow_mut()
+            .extend(backend.capabilities().into_iter().map(Arc::new));
 
         // --- Hero ---------------------------------------------------------
         let hero = GtkBox::new(Orientation::Horizontal, 24);
@@ -656,6 +662,24 @@ impl BatteryPage {
         hero.append(&text);
 
         self.page.append(&hero);
+
+        // --- Charging control ---------------------------------------------
+        // The three-way Battery Mode (or the conservation fallback) belongs
+        // here, beside the readings it changes, rather than only on Home.
+        *self.control.borrow_mut() = None;
+        let control_cap = self
+            .backend
+            .borrow()
+            .iter()
+            .find(|c| c.key == "battery_mode" || c.key == "battery_conservation")
+            .cloned();
+        if let Some(cap) = control_cap {
+            let card = FeatureCard::new(cap);
+            self.page.append(card.gtk_widget());
+            card.connect_controls(self.page.contents.clone().upcast::<gtk4::Widget>());
+            card.refresh();
+            *self.control.borrow_mut() = Some(card);
+        }
 
         // --- Stat cards ---------------------------------------------------
         self.rows.borrow_mut().clear();
@@ -703,6 +727,11 @@ impl BatteryPage {
     }
 
     fn refresh(&self) {
+        // The charging control reads its own capability state.
+        if let Some(card) = self.control.borrow().as_ref() {
+            card.refresh();
+        }
+
         let lookup = |key: &str| {
             self.backend
                 .borrow()

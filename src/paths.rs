@@ -169,6 +169,27 @@ impl SysPaths {
             "ylogo_light" => PathBuf::from("/sys/class/leds/platform::ylogo/brightness"),
             "ioport_light" => PathBuf::from("/sys/class/leds/platform::ioport/brightness"),
 
+            // --- battery charging mode (native power_supply) ----------------
+            // Newer kernels expose the battery's accepted charge types, with
+            // the current one bracketed, as a single writable attribute. That
+            // is the standard Linux interface the three-way Battery Mode is
+            // built on, and it needs no Legion driver.
+            "battery_mode" => battery_charge_types()?,
+
+            // --- legion_laptop module: GPU and system toggles ---------------
+            // Each exists only once the out-of-tree module is loaded, so
+            // `reason_for` reports "Needs the legion_laptop kernel module"
+            // rather than "not supported by this model".
+            "igpumode" => legion("igpumode")?,
+            "gsync" => legion("gsync")?,
+            "winkey" => legion("winkey")?,
+            "overdrive" => legion("overdrive")?,
+            "instant_boot_ac" => legion("instant_boot_ac")?,
+            "instant_boot_usb_pd" => legion("instant_boot_usb_pd")?,
+            "rapid_charge" => legion("rapidcharge")?,
+            "issupportigpumode" => legion("issupportigpumode")?,
+            "issupportgsync" => legion("issupportgsync")?,
+
             _ => return None,
         };
         Some(path)
@@ -342,6 +363,62 @@ pub fn battery_time_hours() -> Option<(f64, bool)> {
     Some((energy / rate, charging))
 }
 
+/// The battery's accepted charge types, as a `power_supply` attribute.
+///
+/// Newer kernels expose `charge_types` on the battery: every value the firmware
+/// accepts, with the current one in brackets (`Fast [Standard] Long_Life`).
+/// Writing one of the names selects it, and the kernel enforces the
+/// Fast/Long_Life exclusivity itself — which is why the three-way Battery Mode
+/// needs no software interlock.
+pub fn battery_charge_types() -> Option<PathBuf> {
+    let path = battery_dir()?.join("charge_types");
+    path.exists().then_some(path)
+}
+
+/// Battery charge types parsed from `charge_types`.
+#[derive(Debug, Default, PartialEq)]
+pub struct ChargeTypes {
+    /// `(wire value, label)` for each accepted type, in the kernel's order.
+    pub values: Vec<(String, String)>,
+    /// The type currently in effect, if the list marked one.
+    pub current: Option<String>,
+}
+
+/// Parse `charge_types`, e.g. `Fast [Standard] Long_Life`.
+///
+/// The bracketed token is the current selection; the rest are the alternatives.
+/// Kept pure so the capability builder and its test share one implementation.
+pub fn parse_charge_types(raw: &str) -> ChargeTypes {
+    let mut values = Vec::new();
+    let mut current = None;
+
+    for token in raw.split_whitespace() {
+        let (name, is_current) = match token.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
+            Some(inner) => (inner, true),
+            None => (token, false),
+        };
+        if name.is_empty() {
+            continue;
+        }
+        if is_current {
+            current = Some(name.to_string());
+        }
+        values.push((name.to_string(), charge_type_label(name)));
+    }
+
+    ChargeTypes { values, current }
+}
+
+/// The name a charge type is shown under, in the vocabulary of the reference.
+fn charge_type_label(name: &str) -> String {
+    match name {
+        "Standard" => "Normal".to_string(),
+        "Long_Life" => "Conservation".to_string(),
+        "Fast" => "Rapid Charge".to_string(),
+        other => other.replace('_', " "),
+    }
+}
+
 /// Every hwmon directory, with its device `name`.
 ///
 /// The kernel exposes sensors through `/sys/class/hwmon/*` regardless of which
@@ -396,4 +473,41 @@ pub fn fan_path(index: u32, legion_hwmon: Option<&Path>) -> Option<PathBuf> {
         .into_iter()
         .map(|(_, path)| path.join(&attribute))
         .find(|candidate| candidate.exists())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The bracketed token is the live value; every token becomes a choice, and
+    /// the firmware names are translated to the reference's vocabulary.
+    #[test]
+    fn charge_types_are_parsed_with_the_current_one_marked() {
+        let parsed = parse_charge_types("Fast [Standard] Long_Life");
+        assert_eq!(parsed.current.as_deref(), Some("Standard"));
+        assert_eq!(
+            parsed.values,
+            vec![
+                ("Fast".to_string(), "Rapid Charge".to_string()),
+                ("Standard".to_string(), "Normal".to_string()),
+                ("Long_Life".to_string(), "Conservation".to_string()),
+            ]
+        );
+    }
+
+    /// Nothing bracketed still yields the choices; the current value is simply
+    /// unknown, and the caller renders the first rather than panicking.
+    #[test]
+    fn an_unbracketed_list_has_no_current_value() {
+        let parsed = parse_charge_types("Standard Fast");
+        assert_eq!(parsed.current, None);
+        assert_eq!(parsed.values.len(), 2);
+    }
+
+    /// An empty or absent attribute must not become an empty dropdown control.
+    #[test]
+    fn an_empty_list_is_not_a_control() {
+        assert!(parse_charge_types("").values.is_empty());
+        assert!(parse_charge_types("   ").values.is_empty());
+    }
 }

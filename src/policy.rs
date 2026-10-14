@@ -23,6 +23,14 @@ pub const HELPER_WRITABLE: &[&str] = &[
     "kbd_backlight",
     "ylogo_light",
     "ioport_light",
+    "battery_mode",
+    "rapid_charge",
+    "igpumode",
+    "gsync",
+    "winkey",
+    "overdrive",
+    "instant_boot_ac",
+    "instant_boot_usb_pd",
 ];
 
 /// True if the key is one the helper will honour.
@@ -43,6 +51,9 @@ pub const WRITABLE_ROOTS: &[&str] = &[
     "/sys/class/firmware-attributes/",
     "/sys/firmware/acpi/",
     "/sys/class/leds/",
+    // The battery's `charge_types` — the native three-way charging mode — lives
+    // in the power_supply class, not under any Lenovo-specific tree.
+    "/sys/class/power_supply/",
     "/sys/module/legion_laptop/",
     "/sys/bus/platform/drivers/ideapad",
 ];
