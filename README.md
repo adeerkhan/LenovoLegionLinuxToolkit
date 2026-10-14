@@ -19,9 +19,10 @@ A dashboard that shows what your laptop can actually do, and lets you control it
 |-----------|----------|
 | **Power**      | Power mode (quiet / balanced / performance / custom), maximum fan speed |
 | **Thermal**    | CPU and GPU temperature, fan RPM |
-| **Lighting**   | Keyboard backlight, Y-logo light |
-| **Battery**    | Charge level and status, battery conservation |
-| **System**     | Fn-lock, touchpad, camera power, always-on USB charging |
+| **GPU**        | Working mode (hybrid / integrated only / hybrid auto), G-Sync |
+| **Lighting**   | Keyboard backlight, Y-logo light, IO-port light |
+| **Battery**    | Charge level and status, battery mode (normal / conservation / rapid) |
+| **System**     | Fn-lock, touchpad, camera power, always-on USB charging, Windows-key lock, Instant Boot |
 
 Readings are unprivileged. Individual writes escalate through polkit to a small
 helper binary, so the application itself never runs as root.

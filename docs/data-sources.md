@@ -67,7 +67,8 @@ sources are more specific and more accurate; later ones are universal.
    `acpi` platform profile. Available on any current kernel.
 3. **Standard Linux interfaces** — `/proc/stat`, `/proc/meminfo`,
    `/proc/diskstats`, `cpufreq`, `statvfs`, `/sys/class/hwmon/*`,
-   `/sys/class/power_supply/*`.
+   `/sys/class/power_supply/*` (including `charge_types`, the native three-way
+   battery charge mode).
 4. **Vendor tools** — `nvidia-smi` for NVIDIA (the only practical route to GPU
    telemetry), `rocm-smi` for AMD.
 
@@ -249,13 +250,33 @@ showed up as a power limit drifting 55 → 54 with an error row underneath.
 cleared by a drop guard. That is the reference's pattern, and it is the right
 one — the value comparison was never going to be reliable.
 
+## Taken from the toolkit, and how
+
+- **Battery Mode as a three-way.** Done, but *not* through the driver's
+  `rapidcharge`/`conservation_mode` pair. Newer kernels expose the battery's
+  accepted charge types directly as `charge_types` on the `power_supply` class —
+  `Fast [Standard] Long_Life`, with the current one bracketed — and the kernel
+  enforces the Fast/Long_Life exclusivity itself. `battery_mode` is built from
+  that attribute, so it needs no Legion driver and no software interlock, and it
+  works on this machine today with the module unloaded. The `conservation_mode`
+  toggle survives only as the fallback where `charge_types` is absent.
+- **GPU Working Mode** (`igpumode`): a three-way enum
+  (Hybrid / Integrated Only / Hybrid Auto), the values the Windows toolkit's
+  `IGPUModeState` uses for the same GameZone method. Module-gated, and gated on
+  `issupportigpumode` so a model whose firmware does not back it says so.
+- **Also taken**, all module-gated and support-probed: `winkey`, `overdrive`,
+  `gsync` — the attribute LLL itself drives as "Hybrid Mode (sometimes also
+  G-Sync)" — and the two `instant_boot_ac` / `instant_boot_usb_pd` toggles.
+
 ## Still to take from the toolkit
 
-- **Battery Mode as a three-way** (normal / conservation / rapid) with the
-  conservation↔rapid interlock the driver documents.
-- **GPU Working Mode** — Hybrid / Discrete, which on Linux is `igpumode`.
 - **Automation** (33 triggers, 51 steps; ours derives steps from capabilities).
 - **The keyboard backlight page** with its effect editor.
+- **Boot logo.** Deliberately not attempted yet: it is not a sysfs control at
+  all. LLL rewrites the `LBLDESP`/`LBLDVC` EFI variables (with a CRC32 and a
+  fixed-size image) and copies the image into the ESP. That is a boot-affecting
+  feature with a different risk profile from a hardware toggle, and it deserves
+  its own design rather than a rushed one.
 
 
 ---

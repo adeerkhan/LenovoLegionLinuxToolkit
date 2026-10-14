@@ -626,12 +626,17 @@ This section records the pass agreed on 2026-10-14, and the backlog behind it.
 
 Ordered by how much of the application stops being empty.
 
-1. **Battery Mode as a three-way** (normal / conservation / rapid) with the
-   conservation↔rapid interlock the driver documents. The docs' own #1
-   remaining item.
-2. **Remaining LLL controls** — GPU Working Mode (`igpumode`), Win-key lock,
-   overdrive, G-Sync, Instant Boot, boot logo — all module-gated so they appear
-   only when `legion_laptop` is loaded.
+1. ✅ **Battery Mode as a three-way** *(done 2026-10-14)* — built on the
+   kernel's native `power_supply/charge_types` interface, not the driver's
+   `rapidcharge`/`conservation_mode` pair. The kernel enforces the
+   Fast/Long_Life exclusivity, so no software interlock is needed, and the
+   control works with no module loaded. The conservation toggle remains as the
+   fallback where `charge_types` is absent.
+2. ✅ **Remaining LLL controls** *(done 2026-10-14)* — GPU Working Mode
+   (`igpumode`), Windows-key lock, display overdrive, G-Sync, and the two
+   Instant Boot toggles, all module-gated and support-probed. **Boot logo is
+   deferred**: it is an EFI-variable/ESP feature in LLL, not a sysfs control,
+   and needs its own design.
 3. **Automation (M3)** — the reference's Actions page: triggers (AC/battery,
    power profile, time/periodic) and steps derived from the capability list,
    persisted like presets.

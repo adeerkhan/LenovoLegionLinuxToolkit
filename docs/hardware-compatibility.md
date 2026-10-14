@@ -83,6 +83,7 @@ Anything the UI shows for these two must be suppressed.
 | Fan controller lock | `<legion>/lockfancontroller` | ✅ | ✅ | **NO** (`skip_lockfancontroller`) |
 | Fan unlock | `<legion>/fan_unlock` | ✅ | ✅ | model-dependent |
 | Battery conservation | **ideapad** `VPC2004:00/conservation_mode` | ✅ | ✅ | **YES** |
+| Battery charge mode (normal / conservation / rapid) | **power_supply** `charge_types` (`Fast [Standard] Long_Life`) | ✅ | ✅ | **YES**, native |
 | Rapid charge | `<legion>/rapidcharge` (ACPI) | ✅ | ✅ | model-dependent |
 | Fn-lock | **ideapad** `VPC2004:00/fn_lock` | ✅ | ✅ | **YES** |
 | Touchpad | **ideapad** `VPC2004:00/touchpad` | ✅ | ✅ | **YES** |
@@ -94,6 +95,9 @@ Anything the UI shows for these two must be suppressed.
 | IO-port LED | `/sys/class/leds/platform::ioport/brightness` | ✅ | ✅ | **YES** |
 | Overdrive | `<legion>/overdrive` | ✅ | ✅ | model-dependent |
 | G-Sync | `<legion>/gsync` | ✅ | ✅ (reboot) | model-dependent |
+| GPU working mode | `<legion>/igpumode` (+ `issupportigpumode`) | ✅ | ✅ (reboot) | model-dependent |
+| Windows-key lock | `<legion>/winkey` | ✅ | ✅ | model-dependent |
+| Instant Boot (AC / USB-PD) | `<legion>/instant_boot_ac`, `<legion>/instant_boot_usb_pd` | ✅ | ✅ | model-dependent |
 | CPU/GPU power limits | `cpu_{short,long,peak,apu_sppt,cross_loading}_powerlimit` etc. | ✅ | ✅ | **NO** |
 | CPU/GPU overclock | `<legion>/cpu_oc`, `gpu_oc` | ✅ | ✅ | **NO** |
 | Battery status | `/sys/class/power_supply/BAT0/{status,capacity,...}` | ✅ | – | **YES** |
