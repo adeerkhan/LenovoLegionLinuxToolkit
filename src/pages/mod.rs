@@ -1136,6 +1136,48 @@ fn settings_page(refresh_seconds: Rc<RefCell<u32>>) -> Page {
         });
         page.append(card.widget());
 
+        // --- Background ------------------------------------------------
+        page.subheading("Background");
+
+        // The autostart entry is the source of truth: the switch reflects the
+        // file on disk, so removing it by hand is picked up on the next launch.
+        let (card, autostart) = setting_switch(
+            "Start on Login",
+            "Launch Legion Toolkit automatically when you log in.",
+            legiontoolkit::services::autostart::is_enabled(),
+        );
+        autostart.connect_state_set(|_, active| {
+            if let Err(e) = legiontoolkit::services::autostart::set(active) {
+                tracing::warn!("could not update start-on-login: {e}");
+            }
+            let _ = settings::update(|s| s.autostart = active);
+            glib::Propagation::Proceed
+        });
+        page.append(card.widget());
+
+        let (card, minimize_close) = setting_switch(
+            "Minimize on Close",
+            "Keep running in the background when the window is closed. Reopen it by \
+             launching Legion Toolkit again, or quit from the menu.",
+            current.minimize_on_close,
+        );
+        minimize_close.connect_state_set(|_, active| {
+            let _ = settings::update(|s| s.minimize_on_close = active);
+            glib::Propagation::Proceed
+        });
+        page.append(card.widget());
+
+        let (card, notifications) = setting_switch(
+            "Notifications",
+            "Show a desktop notification when an automation pipeline runs.",
+            current.notifications,
+        );
+        notifications.connect_state_set(|_, active| {
+            let _ = settings::update(|s| s.notifications = active);
+            glib::Propagation::Proceed
+        });
+        page.append(card.widget());
+
         // --- About the project ------------------------------------------
         page.subheading("About");
         page.append(
@@ -1465,6 +1507,9 @@ fn apply_pipeline(pipeline: &Pipeline, caps: &Rc<RefCell<Vec<Arc<Capability>>>>)
                 Err(e) => tracing::warn!("automation \"{name}\": {} failed: {e}", step.key),
             }
         }
+
+        // One summary notification per run, if the user wants one.
+        legiontoolkit::services::notify::send("Automation", &format!("\"{name}\" ran"));
     });
 }
 

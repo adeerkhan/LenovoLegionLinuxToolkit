@@ -9,7 +9,7 @@
 //! than hand-written per model, which is why the same binary works on a Legion
 //! 5 15IRX10 (no fan curve, no power limits) and on a model that has both.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use adw::prelude::*;
@@ -98,15 +98,29 @@ impl MainWindow {
 
         // Persist the size on close. GTK 4 cannot read a window's position, so
         // only the size is kept — see `Settings::restored_size`.
-        window.connect_close_request(|window| {
-            let (width, height) = (window.width(), window.height());
-            if width > 200 && height > 200 {
-                let _ = legiontoolkit::settings::update(|s| {
-                    s.window_width = Some(width);
-                    s.window_height = Some(height);
-                });
+        //
+        // `force_quit` lets the menu's Quit close the window even when
+        // minimize-on-close would otherwise hide it.
+        let force_quit = Rc::new(Cell::new(false));
+        window.connect_close_request({
+            let force_quit = Rc::clone(&force_quit);
+            move |window| {
+                let (width, height) = (window.width(), window.height());
+                if width > 200 && height > 200 {
+                    let _ = legiontoolkit::settings::update(|s| {
+                        s.window_width = Some(width);
+                        s.window_height = Some(height);
+                    });
+                }
+                // Keep running in the background: hide rather than destroy, so
+                // relaunching the application activates this instance and shows
+                // the window again.
+                if legiontoolkit::settings::current().minimize_on_close && !force_quit.get() {
+                    window.set_visible(false);
+                    return glib::Propagation::Stop;
+                }
+                glib::Propagation::Proceed
             }
-            glib::Propagation::Proceed
         });
 
         // Shared: the toolbar's refresh button, the refresh loop and the
@@ -224,6 +238,29 @@ impl MainWindow {
             move |_| pages.borrow().refresh()
         });
         header.pack_end(&refresh);
+
+        // A menu button. Its only entry today is Quit, which matters because
+        // minimize-on-close otherwise leaves no way to end the process from the
+        // window.
+        let menu = gtk4::gio::Menu::new();
+        menu.append(Some("Quit"), Some("win.quit"));
+        let menu_button = gtk4::MenuButton::builder()
+            .icon_name("open-menu-symbolic")
+            .tooltip_text("Menu")
+            .menu_model(&menu)
+            .build();
+
+        let quit = gtk4::gio::SimpleAction::new("quit", None);
+        quit.connect_activate({
+            let window = window.clone();
+            let force_quit = Rc::clone(&force_quit);
+            move |_, _| {
+                force_quit.set(true);
+                window.close();
+            }
+        });
+        window.add_action(&quit);
+        header.pack_end(&menu_button);
 
         let toolbar = adw::ToolbarView::builder().content(&split).build();
         toolbar.add_top_bar(&header);

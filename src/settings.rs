@@ -48,6 +48,13 @@ pub struct Settings {
     pub compact_mode: bool,
     /// Start hidden rather than showing the window.
     pub start_minimized: bool,
+    /// Start automatically when you log in.
+    pub autostart: bool,
+    /// Hide the window instead of quitting when it is closed, so the
+    /// application keeps running in the background.
+    pub minimize_on_close: bool,
+    /// Show desktop notifications for events such as an automation run.
+    pub notifications: bool,
     /// Re-open at the last window size.
     ///
     /// Size, not position: GTK 4 removed programmatic window placement, so the
@@ -69,6 +76,9 @@ impl Default for Settings {
             refresh_interval_secs: 1,
             compact_mode: false,
             start_minimized: false,
+            autostart: false,
+            minimize_on_close: false,
+            notifications: true,
             remember_window_size: true,
             // Deliberately `None`: a first run should use the toolkit's own
             // default rather than one shipped in a defaults block.
@@ -225,6 +235,9 @@ mod tests {
             refresh_interval_secs: 5,
             compact_mode: true,
             start_minimized: true,
+            autostart: true,
+            minimize_on_close: true,
+            notifications: false,
             remember_window_size: false,
             window_width: Some(1024),
             window_height: Some(768),

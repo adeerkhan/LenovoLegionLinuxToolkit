@@ -6,6 +6,8 @@
 
 use crate::backends::Backend;
 
+pub mod autostart;
+pub mod notify;
 pub mod privilege;
 
 /// States that make the whole application inert, rather than making one control
