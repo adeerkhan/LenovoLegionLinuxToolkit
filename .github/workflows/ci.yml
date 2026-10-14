@@ -2,15 +2,18 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
   pull_request:
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # The library half is tested with no GTK installed, on purpose: it proves the
+  # capability, path-resolution and security-policy layers stay usable — and
+  # testable — on a machine with no display.
   test:
-    name: Test (headless)
+    name: Library tests (headless, no GTK)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,9 +25,6 @@ jobs:
           rustup toolchain install stable --profile minimal --no-self-update
           rustup default stable
 
-      # The default-features build needs GTK; this job deliberately does not,
-      # to prove the capability, path-resolution and security-policy layers
-      # stay testable without a display.
       - name: Test the library without GTK
         run: cargo test --lib --no-default-features --verbose
 
@@ -36,26 +36,43 @@ jobs:
           rustup component add clippy
           cargo clippy --lib --no-default-features -- -D warnings
 
+  # The GUI needs GTK 4.22 / libadwaita 1.9, which no current Ubuntu LTS ships.
+  # The project targets Fedora, so the GUI job runs in a Fedora container where
+  # the exact versions the crates are pinned to are present.
   gui:
-    name: Build GUI
+    name: GUI build, format and lint (Fedora)
     runs-on: ubuntu-latest
+    container: fedora:44
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install GTK 4, libadwaita and build tools
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            gcc gcc-c++ make git \
+            gtk4-devel libadwaita-devel pango-devel \
+            gdk-pixbuf2-devel cairo-gobject-devel graphene-devel
+
       - name: Install Rust
         run: |
-          rustup toolchain install stable --profile minimal --no-self-update
-          rustup default stable
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          "$HOME/.cargo/bin/rustup" component add clippy rustfmt
 
-      - name: Install GTK 4 and libadwaita
+      # Built one target at a time, matching the Makefile. `--bins` shares one
+      # feature resolution across targets, which links GTK into the privileged
+      # helper — a process that runs as root and must not pull in a GUI runtime.
+      - name: Build the GUI
+        run: cargo build --release --bin legiontoolkit
+
+      - name: Build the helper and the probe without GTK
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libgtk-4-dev libadwaita-1-dev libpango1.0-dev \
-            libgdk-pixbuf-2.0-dev libcairo2-dev libgraphene-1.0-dev
-
-      - name: Build both binaries
-        run: cargo build --release --bins --verbose
+          cargo build --release --bin legiontoolkit-helper --no-default-features
+          cargo build --release --bin legiontoolkit-keyboard-probe --no-default-features
 
       - name: Format check
         run: cargo fmt --check
+
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
