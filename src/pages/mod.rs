@@ -1305,6 +1305,7 @@ fn settings_page(refresh_seconds: Rc<RefCell<u32>>) -> Page {
 /// `None` when this machine has no ITE RGB keyboard. The protocol is our own
 /// implementation of the controller (see [`legiontoolkit::rgb`]); this card is
 /// the UI over it.
+#[allow(deprecated)] // gtk4::ColorButton is the swatch widget; still the simplest fit.
 fn rgb_section() -> Option<LltCard> {
     use legiontoolkit::rgb::{Effect, Keyboard};
 
@@ -1316,7 +1317,7 @@ fn rgb_section() -> Option<LltCard> {
     struct Ui {
         off: bool,
         effect: Effect,
-        color: [u8; 3],
+        zones: [[u8; 3]; legiontoolkit::rgb::NUM_ZONES],
         brightness: u32,
         speed: u32,
         forward: bool,
@@ -1325,7 +1326,7 @@ fn rgb_section() -> Option<LltCard> {
     let state = Rc::new(RefCell::new(Ui {
         off: false,
         effect: Effect::Static,
-        color: [255, 32, 32],
+        zones: [[255, 32, 32]; legiontoolkit::rgb::NUM_ZONES],
         brightness: 40,
         speed: 5,
         forward: true,
@@ -1372,35 +1373,34 @@ fn rgb_section() -> Option<LltCard> {
         }
     });
 
-    // --- Colour ---------------------------------------------------------
-    let swatch = gtk4::Button::with_label(&hex(state.borrow().color));
-    swatch.set_valign(Align::Center);
-    swatch.connect_clicked({
-        let state = Rc::clone(&state);
-        let swatch = swatch.clone();
-        move |button| {
-            let dialog = gtk4::ColorDialog::new();
-            let parent = button.root().and_downcast::<gtk4::Window>();
-            let state = Rc::clone(&state);
-            let swatch = swatch.clone();
-            dialog.choose_rgba(
-                parent.as_ref(),
-                None::<&gtk4::gdk::RGBA>,
-                None::<&gtk4::gio::Cancellable>,
-                move |result| {
-                    if let Ok(rgba) = result {
-                        let rgb = [
-                            (rgba.red() * 255.0).round() as u8,
-                            (rgba.green() * 255.0).round() as u8,
-                            (rgba.blue() * 255.0).round() as u8,
-                        ];
-                        state.borrow_mut().color = rgb;
-                        swatch.set_label(&hex(rgb));
-                    }
-                },
-            );
+    // --- Zones ----------------------------------------------------------
+    // The keyboard's 24 zones as a 4x6 grid of colour swatches — the same
+    // idea as the reference's 24-zone view. Each swatch is a GTK colour
+    // button, so a click opens the system colour chooser.
+    let zone_grid = gtk4::Grid::new();
+    zone_grid.set_row_spacing(4);
+    zone_grid.set_column_spacing(4);
+    zone_grid.set_halign(Align::Start);
+    for row in 0..legiontoolkit::rgb::NUM_ROWS {
+        for col in 0..legiontoolkit::rgb::NUM_COLS {
+            let index = row * legiontoolkit::rgb::NUM_COLS + col;
+            let button = gtk4::ColorButton::new();
+            button.set_size_request(64, 28);
+            button.set_rgba(&to_rgba(state.borrow().zones[index]));
+            button.connect_color_set({
+                let state = Rc::clone(&state);
+                move |button| {
+                    let rgba = button.rgba();
+                    state.borrow_mut().zones[index] = [
+                        (rgba.red() * 255.0).round() as u8,
+                        (rgba.green() * 255.0).round() as u8,
+                        (rgba.blue() * 255.0).round() as u8,
+                    ];
+                }
+            });
+            zone_grid.attach(&button, col as i32, row as i32, 1, 1);
         }
-    });
+    }
 
     // --- Brightness and speed ------------------------------------------
     let brightness = gtk4::SpinButton::with_range(1.0, 50.0, 1.0);
@@ -1425,7 +1425,7 @@ fn rgb_section() -> Option<LltCard> {
     grid.set_row_spacing(8);
     for (index, (label, widget)) in [
         ("Effect", effect_dd.clone().upcast::<gtk4::Widget>()),
-        ("Colour", swatch.clone().upcast::<gtk4::Widget>()),
+        ("Zones", zone_grid.clone().upcast::<gtk4::Widget>()),
         ("Brightness", brightness.clone().upcast::<gtk4::Widget>()),
         ("Speed", speed.clone().upcast::<gtk4::Widget>()),
     ]
@@ -1465,13 +1465,12 @@ fn rgb_section() -> Option<LltCard> {
                 if state.off {
                     keyboard.turn_off()
                 } else if state.effect == Effect::Static {
-                    keyboard.set_color(state.color, state.brightness)
+                    keyboard.set_zone_colors(&state.zones, state.brightness)
                 } else {
-                    let color = state.effect.uses_color().then_some(state.color);
                     keyboard.set_effect(
                         state.effect,
                         state.speed,
-                        color,
+                        None,
                         state.forward,
                         state.brightness,
                     )
@@ -1496,9 +1495,14 @@ fn rgb_section() -> Option<LltCard> {
     Some(card)
 }
 
-/// A colour as `#rrggbb`.
-fn hex(rgb: [u8; 3]) -> String {
-    format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2])
+/// A colour as a GTK RGBA.
+fn to_rgba(rgb: [u8; 3]) -> gtk4::gdk::RGBA {
+    gtk4::gdk::RGBA::new(
+        rgb[0] as f32 / 255.0,
+        rgb[1] as f32 / 255.0,
+        rgb[2] as f32 / 255.0,
+        1.0,
+    )
 }
 
 // ---------------------------------------------------------------------------

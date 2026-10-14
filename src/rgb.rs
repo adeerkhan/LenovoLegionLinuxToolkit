@@ -250,6 +250,34 @@ fn static_group(rgb: [u8; 3]) -> Group {
     }
 }
 
+/// Build static groups for per-zone colours, one group per distinct colour
+/// (so a solid colour is a single group, and a rainbow of zones is many).
+fn static_groups(zones: &[[u8; 3]; NUM_ZONES]) -> Vec<Group> {
+    let mut groups: Vec<([u8; 3], Vec<u16>)> = Vec::new();
+    for (index, color) in zones.iter().enumerate() {
+        if *color == [0, 0, 0] {
+            continue; // off zones simply carry no colour
+        }
+        let led = (index + 1) as u16;
+        match groups.iter_mut().find(|(existing, _)| existing == color) {
+            Some((_, leds)) => leds.push(led),
+            None => groups.push((*color, vec![led])),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(color, leds)| Group {
+            mode: Effect::Static.mode(),
+            speed: raw_speed(UI_SPEED_MAX / 2),
+            spin: 0,
+            direction: 0,
+            color_mode: 0x02,
+            colors: vec![color],
+            leds,
+        })
+        .collect()
+}
+
 /// Build the group for a hardware effect.
 fn effect_group(effect: Effect, speed: u32, color: Option<[u8; 3]>, forward: bool) -> Group {
     let (spin, direction) = match effect {
@@ -364,6 +392,14 @@ impl Keyboard {
         self.apply(&[static_group(rgb)], brightness)
     }
 
+    /// Set each of the 24 zones to its own colour.
+    pub fn set_zone_colors(&self, zones: &[[u8; 3]; NUM_ZONES], brightness: u32) -> io::Result<()> {
+        if zones.iter().all(|c| *c == [0, 0, 0]) {
+            return self.turn_off();
+        }
+        self.apply(&static_groups(zones), brightness)
+    }
+
     /// Run a hardware effect.
     pub fn set_effect(
         &self,
@@ -469,5 +505,30 @@ mod tests {
         assert_eq!(packet[4], PROFILE);
         let payload_len = packet[2] as usize | ((packet[3] as usize) << 8);
         assert!(payload_len > 3, "payload includes at least one group");
+    }
+
+    /// Per-zone colours become one group per distinct colour, each carrying the
+    /// LED ids that share it.
+    #[test]
+    fn zone_colours_group_by_distinct_colour() {
+        let mut zones = [[0u8, 0, 0]; NUM_ZONES];
+        zones[0] = [255, 0, 0];
+        zones[1] = [255, 0, 0];
+        zones[2] = [0, 0, 255];
+        let groups = static_groups(&zones);
+        assert_eq!(groups.len(), 2, "red and blue; black zones are skipped");
+        let red = groups.iter().find(|g| g.colors[0] == [255, 0, 0]).unwrap();
+        assert_eq!(red.leds, vec![1, 2]);
+        let blue = groups.iter().find(|g| g.colors[0] == [0, 0, 255]).unwrap();
+        assert_eq!(blue.leds, vec![3]);
+    }
+
+    /// A uniform colour is a single group over all 24 zones.
+    #[test]
+    fn a_uniform_colour_is_one_group_of_all_zones() {
+        let zones = [[10, 20, 30]; NUM_ZONES];
+        let groups = static_groups(&zones);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].leds.len(), NUM_ZONES);
     }
 }
