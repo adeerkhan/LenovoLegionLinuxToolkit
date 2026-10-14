@@ -55,66 +55,56 @@ shows live data out of the box.
 
 ## Installation
 
-### Any Linux — local install
+`make install` builds the application and its privileged helper, installs the
+polkit policy, desktop entry, icons and a udev rule, and places the helper
+exactly where the polkit policy names it. The Makefile owns every destination, so
+it is reversible with `make uninstall` and relocatable with a different `PREFIX`.
 
-The quickest route to a working, testable installation today:
+### 1. Prerequisites
 
-```sh
-git clone https://github.com/adeerkhan/legion-toolkit.git
-cd legion-toolkit
-make install
-```
-
-That builds both binaries and installs the polkit policy, desktop entry and
-icon, with the helper placed exactly where the policy names it. The Makefile
-owns every destination, so `make install PREFIX=~/.local` works too, and
-`make uninstall` reverses it exactly.
-
-`make distcheck` prints the layout without touching the system — the fastest
-way to see where things will land before you commit to it.
-
-### Fedora
-
-Prerequisites, then the commands above:
+GTK 4.22 / libadwaita 1.9 and a Rust toolchain (1.85 or newer):
 
 ```sh
-sudo dnf install \
-    gtk4-devel libadwaita-devel pango-devel \
+# Fedora
+sudo dnf install gtk4-devel libadwaita-devel pango-devel \
     gdk-pixbuf2-devel cairo-gobject-devel graphene-devel
-```
 
-### Ubuntu / Debian
-
-```sh
-sudo apt install \
-    libgtk-4-dev libadwaita-1-dev libpango1.0-dev \
+# Ubuntu / Debian — 25.10 "questing" or newer; older releases lack GTK 4.22
+sudo apt install libgtk-4-dev libadwaita-1-dev libpango1.0-dev \
     libgdk-pixbuf-2.0-dev libcairo2-dev libgraphene-1.0-dev
 ```
 
-### Arch Linux
+### 2. Install
 
-Not packaged yet — use `make install` below. An AUR `PKGBUILD` is planned.
+```sh
+git clone https://github.com/adeerkhan/LenovoLegionLinuxToolkit
+cd LenovoLegionLinuxToolkit
+sudo make install
+legiontoolkit            # or launch it from your app menu
+```
 
-### From a distribution package
+Run `make distcheck` first to print the install layout without touching the
+system, and use `make install PREFIX=~/.local` to install into your home
+directory instead.
 
-Not yet in any distribution's repositories. An RPM for Fedora and a DEB for
-Ubuntu are the next step; until then, `make install` above is the supported
-route.
+`make install` also installs the udev rule that lets your user open the RGB
+keyboard's hidraw node, so the **Keyboard RGB** card works unprivileged. A
+`$HOME` install cannot write `/etc/udev/rules.d`; install that one file manually:
 
-On Flatpak: it would be a single artifact for every distribution, but the
-sandbox cannot write to `/sys`, and the privilege model here needs a root
-helper outside that sandbox. For a hardware control panel, native packages are
-the correct answer, so that is where the effort goes.
+```sh
+sudo install -Dm644 packaging/99-legiontoolkit-hidraw.rules \
+    /etc/udev/rules.d/99-legiontoolkit-hidraw.rules
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
 
-### Hardware permissions
+### 3. Privileged writes
 
-Reading hardware needs no special permissions. Writing does, and the
-application handles it by escalating per write: the first write in a session
-prompts for your password, and polkit remembers the authorisation for the rest
-of the session (`auth_admin_keep`).
+Reads need no permissions. Each write escalates through polkit to the helper: the
+first write in a session prompts for your password and polkit then remembers the
+authorisation (`auth_admin_keep`), so you are not prompted per change.
 
-To remove the prompt entirely for a user sitting at the machine, install the
-no-password polkit rule:
+To drop the prompt for a user sitting at the machine, install the no-password rule
+at the same time as the application:
 
 ```sh
 sudo make install LEGIONTOOLKIT_NO_PASSWORD=1
@@ -123,34 +113,53 @@ sudo make install LEGIONTOOLKIT_NO_PASSWORD=1
 That installs `49-legiontoolkit.rules`, which lets an `active` and `local`
 session use the helper without authenticating. It grants nothing beyond the
 capabilities this application already exposes — the helper's allowlist and its
-destination-root check still apply — and it is reversible by deleting the file.
-
-Alternatively, a udev rule can grant group write on the keyboard-backlight
-attribute alone:
+destination-root check still apply — and it is reversible:
 
 ```sh
-# /etc/udev/rules.d/99-legion-toolkit.rules
-ACTION=="add|change", SUBSYSTEM=="leds", KERNEL=="platform::kbd_backlight*", MODE="0666"
+sudo rm /etc/polkit-1/rules.d/49-legiontoolkit.rules
 ```
 
-then reload:
+### 4. Optional: the kernel module
+
+`legion_laptop` from [LenovoLegionLinux](https://github.com/johnfanv2/LenovoLegionLinux)
+adds the keyboard backlight, Y-logo and IO-port LEDs, GPU working mode, G-Sync,
+Windows-key lock and Instant Boot. Everything backed by `ideapad_acpi` — battery,
+Fn-lock, touchpad, camera, always-on USB — and the whole Home sensor row work
+without it.
 
 ```sh
-sudo udevadm control --reload-rules && sudo udevadm trigger
+cd Reference/LenovoLegionLinux/kernel_module
+make
+sudo make reloadmodule
 ```
+
+### 5. Uninstall
+
+```sh
+sudo make uninstall        # binaries, policy, desktop entry, icons and rules
+```
+
+### Packages and Flatpak
+
+Not yet in any distribution's repositories. `packaging/` holds an RPM spec (build
+with `make rpm`), a Debian `debian/` directory and an AUR `PKGBUILD`. Flatpak is
+deliberately not used: it cannot write to `/sys`, and this privilege model needs a
+root helper outside the sandbox.
 
 ---
 
 ## Building from source
 
 ```sh
-git clone https://github.com/adeerkhan/legion-toolkit.git
-cd legion-toolkit
+git clone https://github.com/adeerkhan/LenovoLegionLinuxToolkit.git
+cd LenovoLegionLinuxToolkit
 cargo build --release
-sudo cargo install --path . --root /usr/local
 ```
 
-Run without installing:
+`make install` is the supported route; `sudo cargo install` cannot install the
+polkit action or the udev rule that the helper and the RGB card need.
+
+Run without installing — reading hardware needs no privileges:
 
 ```sh
 cargo run --release
@@ -159,30 +168,37 @@ cargo run --release
 ### Useful commands
 
 ```sh
-# Show the full capability set for this machine, including what is missing,
-# using a mock backend — no hardware required.
+# Render the UI with no hardware, using the mock backend.
 LEGIONTOOLKIT_MOCK=1 cargo run --release
 
-# Run the capability, path-resolution and security-policy tests.
+# The capability, path-resolution, policy and RGB-protocol tests.
 # Needs no display installed.
 cargo test --lib --no-default-features
 
-# Determine whether this keyboard supports four-zone RGB. Read-only: it only
-# ever issues HIDIOCGFEATURE, never a write.
-sudo ./target/debug/legiontoolkit-keyboard-probe
+# The full gate this project must pass.
+make check
 
-# Check the privileged helper's allowlist.
-./target/release/legiontoolkit-helper set <capability-key> <value>
+# Print the capability report for this machine, including what is missing.
+cargo test --lib --no-default-features capability_report -- --nocapture
+
+# Build a distribution RPM from the current commit.
+make rpm
+
+# Render a page to a PNG offline (no display needed).
+LEGIONTOOLKIT_SHOT=/tmp/home.png LEGIONTOOLKIT_PAGE=home cargo run --release
 ```
 
 ---
 
 ## Current status
 
-Early development. The read-only dashboard, the capability layer and the
-privilege escalation path are complete and tested. Fan-curve editing is
-architectured but not implemented, because the development machine does not
-support fan curves — the honest thing was to build the suppression path first.
+Working: the capability layer, the read-only dashboard, per-write privilege
+escalation, presets, battery charge mode, the 24-zone RGB keyboard (colour,
+effects and presets), settings, and the four-card Home dashboard.
+
+Not implemented: fan-curve editing (this machine's firmware has no fan curve —
+the suppression path is built instead), automation, and the firmware's own
+`Fn+Space` lighting slots, which the USB protocol does not expose.
 
 Verified on a Lenovo Legion 5 15IRX10 (83LY, BIOS QNCN38WW), kernel 7.2,
 Fedora 44.
@@ -208,11 +224,7 @@ other people, and would not exist without either of these:
   card-based design system and its habit of hiding unsupported controls rather
   than breaking them are the two ideas borrowed most directly.
 
-  It was originally created by
-  [Bartosz Cichecki](https://github.com/BartoszCichecki), whose repository has
-  since been archived, and is now developed by the
-  **LenovoLegionToolkit-Team**. The copy vendored under `Reference/` in this
-  repository is theirs.
+  The copy vendored under `Reference/` in this repository is theirs.
 
 - **[keyRGB](https://github.com/Rainexn0b/keyRGB)** by Rainexn0b — the Linux
   tray app whose reverse engineering of the Lenovo Gen10 24-zone ITE keyboard

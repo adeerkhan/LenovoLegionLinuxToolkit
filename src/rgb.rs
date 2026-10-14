@@ -51,8 +51,8 @@ fn led_ids() -> Vec<u16> {
     (1..=NUM_ZONES as u16).collect()
 }
 
-/// UI brightness runs `0..=50`; the firmware takes `0..=9`.
-const UI_BRIGHTNESS_MAX: u32 = 50;
+/// UI brightness runs `0..=100`; the firmware takes `0..=9`.
+const UI_BRIGHTNESS_MAX: u32 = 100;
 const RAW_BRIGHTNESS_MAX: u8 = 9;
 /// UI speed runs `0..=10`; the firmware takes `1..=3`.
 const UI_SPEED_MAX: u32 = 10;
@@ -474,11 +474,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn brightness_scales_to_the_firmware_range() {
+    fn brightness_scales_from_a_percentage() {
         assert_eq!(raw_brightness(0), 0);
         assert_eq!(raw_brightness(1), 1, "any non-zero level is at least 1");
-        assert_eq!(raw_brightness(50), 9);
-        assert_eq!(raw_brightness(25), 5, "half of 9, rounded");
+        assert_eq!(raw_brightness(50), 5, "half of the range");
+        assert_eq!(raw_brightness(100), 9);
         assert_eq!(raw_brightness(999), 9, "clamped");
     }
 

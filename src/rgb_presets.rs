@@ -60,11 +60,46 @@ pub struct RgbPresetStore {
 
 impl Default for RgbPresetStore {
     fn default() -> Self {
-        // Six numbered slots, as the reference shows.
-        Self {
-            presets: (1..=6).map(|n| RgbPreset::new(n.to_string())).collect(),
-            active: 0,
-        }
+        // Six numbered slots, as the reference shows. Deliberately distinct so
+        // switching between them visibly changes the keyboard.
+        let presets = vec![
+            static_preset("1", [255, 32, 32]),
+            static_preset("2", [32, 255, 96]),
+            static_preset("3", [32, 96, 255]),
+            RgbPreset {
+                name: "4".into(),
+                effect: Effect::ScrewRainbow.name().into(),
+                zones: vec![[0, 0, 0]; NUM_ZONES],
+                brightness: 40,
+                speed: 5,
+            },
+            RgbPreset {
+                name: "5".into(),
+                effect: Effect::RainbowWave.name().into(),
+                zones: vec![[0, 0, 0]; NUM_ZONES],
+                brightness: 40,
+                speed: 5,
+            },
+            RgbPreset {
+                name: "6".into(),
+                effect: Effect::ColorPulse.name().into(),
+                zones: vec![[0, 0, 0]; NUM_ZONES],
+                brightness: 40,
+                speed: 5,
+            },
+        ];
+        Self { presets, active: 0 }
+    }
+}
+
+/// A preset whose 24 zones are one solid colour.
+fn static_preset(name: &str, rgb: [u8; 3]) -> RgbPreset {
+    RgbPreset {
+        name: name.into(),
+        effect: Effect::Static.name().into(),
+        zones: vec![rgb; NUM_ZONES],
+        brightness: 40,
+        speed: 5,
     }
 }
 

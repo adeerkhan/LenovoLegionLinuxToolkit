@@ -1385,6 +1385,9 @@ fn rgb_section() -> Option<LltCard> {
     // idea as the reference's 24-zone view. Each swatch is a GTK colour
     // button, so a click opens the system colour chooser.
     let zone_grid = gtk4::Grid::new();
+    zone_grid.add_css_class("llt-keyboard");
+    zone_grid.set_margin_top(8);
+    zone_grid.set_margin_bottom(8);
     zone_grid.set_row_spacing(4);
     zone_grid.set_column_spacing(4);
     zone_grid.set_halign(Align::Start);
@@ -1393,8 +1396,15 @@ fn rgb_section() -> Option<LltCard> {
         for col in 0..legiontoolkit::rgb::NUM_COLS {
             let index = row * legiontoolkit::rgb::NUM_COLS + col;
             let button = gtk4::ColorButton::new();
-            button.set_size_request(64, 28);
+            button.set_size_request(58, 22);
             button.set_rgba(&to_rgba(state.borrow().zones[index]));
+            // Stagger the rows, as keyboard rows are staggered.
+            if row % 2 == 1 {
+                button.set_margin_start(16);
+            }
+            if row == 3 {
+                button.set_margin_end(24);
+            }
             button.connect_color_set({
                 let state = Rc::clone(&state);
                 move |button| {
@@ -1412,20 +1422,25 @@ fn rgb_section() -> Option<LltCard> {
     }
 
     // --- Brightness and speed ------------------------------------------
-    let brightness = gtk4::SpinButton::with_range(1.0, 50.0, 1.0);
+    // Sliders, not steppers: brightness is a percentage, speed a 0-10 scale.
+    let brightness = gtk4::Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 5.0);
+    brightness.set_size_request(240, -1);
     brightness.set_value(40.0);
     brightness.set_valign(Align::Center);
+    brightness.set_draw_value(true);
     brightness.connect_value_changed({
         let state = Rc::clone(&state);
-        move |spin| state.borrow_mut().brightness = spin.value() as u32
+        move |scale| state.borrow_mut().brightness = scale.value() as u32
     });
 
-    let speed = gtk4::SpinButton::with_range(0.0, 10.0, 1.0);
+    let speed = gtk4::Scale::with_range(Orientation::Horizontal, 0.0, 10.0, 1.0);
+    speed.set_size_request(240, -1);
     speed.set_value(5.0);
     speed.set_valign(Align::Center);
+    speed.set_draw_value(true);
     speed.connect_value_changed({
         let state = Rc::clone(&state);
-        move |spin| state.borrow_mut().speed = spin.value() as u32
+        move |scale| state.borrow_mut().speed = scale.value() as u32
     });
 
     // --- Rows -----------------------------------------------------------

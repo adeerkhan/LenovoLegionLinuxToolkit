@@ -555,29 +555,23 @@ impl Backend for SysfsBackend {
             // (off / low / high) with max_brightness = 2.
             let path = self.paths.file("kbd_backlight");
             let exists = path.as_ref().map(|p| p.exists()).unwrap_or(false);
-            let mut b = Builder::new("kbd_backlight", Kind::Enum, Group::Lighting)
+            // On/off only. The three WMI brightness levels do nothing on this
+            // keyboard — the 24-zone controller owns it — and a switch that
+            // changes nothing is worse than no switch.
+            let mut b = Builder::new("kbd_backlight", Kind::Toggle, Group::Lighting)
                 .label("Keyboard Backlight")
                 .icon("keyboard-brightness-symbolic")
-                .note("On / low / high. Colour and effects are set on the Keyboard RGB card.")
-                .values(vec![
-                    NamedValue {
-                        value: "0".into(),
-                        label: "Off".into(),
-                    },
-                    NamedValue {
-                        value: "1".into(),
-                        label: "Low".into(),
-                    },
-                    NamedValue {
-                        value: "2".into(),
-                        label: "High".into(),
-                    },
-                ]);
+                .note("Switches the backlight on or off. Colour and effects are on the Keyboard RGB card.");
             if exists {
                 let read_path = path.unwrap();
-                b = b.read(move || Ok(Value::Text(read_trim(&read_path)?)));
+                b = b.read(move || Ok(Value::Bool(read_trim(&read_path)? != "0")));
                 b = b.write(|v| {
-                    crate::services::privilege::request("kbd_backlight", &v.to_string())?;
+                    let level = if matches!(v, Value::Bool(true)) {
+                        "2"
+                    } else {
+                        "0"
+                    };
+                    crate::services::privilege::request("kbd_backlight", level)?;
                     Ok(())
                 });
             } else {

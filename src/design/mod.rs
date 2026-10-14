@@ -105,6 +105,14 @@ pub const STYLE_CSS: &str = r#"
     min-height: 6px;
 }
 
+/* The 24-zone keyboard shape on the Lighting page: a framed panel with the
+   zone rows staggered inside it, so it reads as a keyboard. */
+.llt-keyboard {
+    background-color: alpha(currentColor, 0.05);
+    border-radius: 6px;
+    padding: 8px;
+}
+
 /* The reference's data bars are blue even though its brand accent is red: the
    accent marks interactive things (buttons, selected rows) and the bar marks a
    measurement. Using the accent for both made every reading look like an alert,

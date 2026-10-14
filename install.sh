@@ -36,6 +36,10 @@ HELPER_PATH="$PREFIX/libexec/legiontoolkit-helper"
 # /usr/local/etc would simply never be read.
 POLKITRULESDIR="$DESTDIR/etc/polkit-1/rules.d"
 
+# The udev rule that hands the user the RGB keyboard's hidraw node. Also a fixed
+# absolute path for the same reason.
+UDEVRULESDIR="$DESTDIR/etc/udev/rules.d"
+
 POLICY="org.legiontoolkit.helper.policy"
 BINARIES="legiontoolkit legiontoolkit-helper legiontoolkit-keyboard-probe"
 ICON_SIZES="16 22 24 32 48 64 128 256 512"
@@ -116,6 +120,19 @@ if [ "$mode" = install ]; then
     render_policy > "$tmp_policy"
     install -Dm644 "$tmp_policy" "$POLKITDIR/$POLICY"
 
+    # The RGB keyboard's hidraw node. Best effort, because /etc needs root and
+    # a user-local PREFIX does not have it.
+    if install -Dm644 "$here/packaging/99-legiontoolkit-hidraw.rules" \
+                      "$UDEVRULESDIR/99-legiontoolkit-hidraw.rules" 2>/dev/null; then
+        if command -v udevadm >/dev/null; then
+            udevadm control --reload-rules 2>/dev/null || true
+            udevadm trigger --subsystem-match=hidraw 2>/dev/null || true
+        fi
+    else
+        echo "  udev rule    not installed — needs root to write /etc/udev/rules.d."
+        echo "                (Keyboard RGB will report permission denied until it is.)"
+    fi
+
     # Optional: let an active, local session use the helper without a password.
     # Off by default; enabled with `make install LEGIONTOOLKIT_NO_PASSWORD=1`.
     # This grants the org.legiontoolkit.helper action and nothing else, and the
@@ -157,6 +174,10 @@ else
     # needs root. Failing to remove it (a non-root uninstall) must not abort the
     # rest of the uninstall.
     rm -f "$POLKITRULESDIR/49-legiontoolkit.rules" 2>/dev/null || true
+    rm -f "$UDEVRULESDIR/99-legiontoolkit-hidraw.rules" 2>/dev/null || true
+    if command -v udevadm >/dev/null; then
+        udevadm control --reload-rules 2>/dev/null || true
+    fi
     rm -f "$ICONTHEMEDIR"/*/apps/legiontoolkit.png
     echo "removed from $PREFIX"
 fi

@@ -1,0 +1,11 @@
+# Grant the desktop user access to the Lenovo Gen10 RGB keyboard's hidraw
+# nodes, so the toolkit can drive the lighting unprivileged.
+#
+# The colour is driven over USB: 960-byte HID Feature reports on the vendor
+# interface. Without this rule (or an equivalent) the kernel leaves the node
+# root-only and the Keyboard RGB card reports permission denied.
+#
+# Installed by `make install`; removable with `make uninstall`.
+
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="048d", ATTRS{idProduct}=="c195", TAG+="uaccess", RUN{builtin}+="uaccess"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="048d", ATTRS{idProduct}=="c197", TAG+="uaccess", RUN{builtin}+="uaccess"
