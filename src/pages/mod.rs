@@ -263,26 +263,9 @@ impl CapabilityPage {
             }
         }
 
-        if !unavailable.is_empty() {
-            let reasons: std::collections::BTreeSet<&str> = unavailable
-                .iter()
-                .filter_map(|c| c.unavailable_reason)
-                .collect();
-            let note = Label::new(Some(&format!(
-                "{} control{} unavailable on this machine ({}) — see About for the full list.",
-                unavailable.len(),
-                if unavailable.len() == 1 {
-                    " is"
-                } else {
-                    "s are"
-                },
-                reasons.into_iter().collect::<Vec<_>>().join("; ")
-            )));
-            note.add_css_class("llt-page-footnote");
-            note.set_halign(Align::Start);
-            note.set_wrap(true);
-            self.page.append(&note);
-        }
+        // What is missing is not spelled out on the page: the full list lives
+        // on the About page, and a footnote on every section was noise. Only a
+        // page with nothing at all still says so.
 
         // A page with nothing on it should say so rather than look broken.
         if self.cards.borrow().is_empty() && unavailable.is_empty() {
@@ -342,7 +325,6 @@ pub struct Pages {
     /// The landing page: readings and controls together.
     pub home: CapabilityPage,
     pub battery: BatteryPage,
-    pub power: CapabilityPage,
     pub processors: CapabilityPage,
     pub lighting: CapabilityPage,
     pub system: CapabilityPage,
@@ -400,20 +382,15 @@ impl Pages {
                             )
                         }),
                     ),
-                ]),
+                ])
+                .with_extra(|page, caps| {
+                    // Named power presets. They used to live on the Power page,
+                    // which is gone; they belong here, beside the power mode and
+                    // limits the Home sections control.
+                    let card = presets_section(Rc::clone(caps));
+                    page.append(card.widget());
+                }),
             battery: BatteryPage::new(),
-            power: CapabilityPage::new(
-                |page| {
-                    page.heading("Power");
-                },
-                Rc::clone(&caps),
-            )
-            .with_extra(|page, caps| {
-                // The presets editor belongs on the Power page, next to the
-                // limits it stores.
-                let card = presets_section(Rc::clone(caps));
-                page.append(card.widget());
-            }),
             // The Processors page is the controls only, grouped. The telemetry
             // (temperatures, clocks, utilization) lives in the Home sensor row;
             // repeating it here is exactly the duplication to avoid.
@@ -471,10 +448,6 @@ impl Pages {
         self.home.rebuild(|_| true);
         // Group pages show controls only. The read-only telemetry belongs in
         // the Home sensor row, not repeated as a card on every page.
-        self.power.rebuild(|c| {
-            c.group == legiontoolkit::capability::Group::Power
-                && !matches!(c.kind, legiontoolkit::capability::Kind::ReadOnly)
-        });
         // The Processors page renders sections, so its filter is unused.
         self.processors.rebuild(|_| false);
         self.lighting.rebuild(|c| {
@@ -503,8 +476,8 @@ impl Pages {
     /// Tick the values on the page that is actually on screen.
     ///
     /// Every capability read is a file open, a read and a parse, and the
-    /// application has around fifty of them across eight pages. Refreshing all
-    /// eight every second did all of that work for seven pages nobody was
+    /// application has around fifty of them across seven pages. Refreshing all
+    /// seven every second did all of that work for six pages nobody was
     /// looking at — including five GPU cache locks — which is exactly the kind
     /// of background churn that costs a laptop its battery.
     ///
@@ -513,7 +486,6 @@ impl Pages {
     pub fn refresh(&self) {
         self.home.refresh_if_mapped();
         self.battery.refresh_if_mapped();
-        self.power.refresh_if_mapped();
         self.processors.refresh_if_mapped();
         self.lighting.refresh_if_mapped();
         self.system.refresh_if_mapped();
@@ -525,7 +497,6 @@ impl Pages {
     pub fn stack_pages(&self) -> Vec<(&'static str, &ScrolledWindow, &'static str)> {
         vec![
             ("home", self.home.widget(), "Home"),
-            ("power", self.power.widget(), "Power"),
             ("processors", self.processors.widget(), "Processors & GPU"),
             ("lighting", self.lighting.widget(), "Lighting"),
             ("battery", self.battery.widget(), "Battery"),
@@ -636,6 +607,9 @@ fn append_sensor_grid(page: &mut Page, out: &ThermalGrid) {
             ),
             (storage.add_row("Swap", "%", 0, 100.0), "swap_utilization"),
         ];
+        // A blank row keeps the Disk section on the same line as the Battery
+        // section in the Motherboard card, which has three rows above it.
+        storage.blank_row();
         storage.divider();
         storage.subheading("Disk");
         storage_rows.push((storage.add_row("Usage", "%", 0, 100.0), "disk_usage"));

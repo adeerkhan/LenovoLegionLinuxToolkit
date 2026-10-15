@@ -20,9 +20,8 @@ use crate::pages::Pages;
 use legiontoolkit::backends::{Backend, MockBackend, SysfsBackend};
 
 /// Main sidebar entries, in the order the reference uses.
-const MAIN_NAV: [(&str, &str, &str); 6] = [
+const MAIN_NAV: [(&str, &str, &str); 5] = [
     ("go-home-symbolic", "Home", "home"),
-    ("power-profile-performance-symbolic", "Power", "power"),
     (
         "org.gnome.Settings-device-diagnostics-symbolic",
         "Processors & GPU",

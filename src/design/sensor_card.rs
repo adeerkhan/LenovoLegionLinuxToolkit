@@ -185,4 +185,19 @@ impl SensorCard {
         label.set_margin_top(2);
         self.root.append(&label);
     }
+
+    /// A blank, row-height gap.
+    ///
+    /// Used so the section dividers in two combined cards (Motherboard+Battery
+    /// and Memory+Disk) land on the same line: without it the shorter card's
+    /// second section sits higher, and the two cards stop reading as a set. It
+    /// carries no row index, so it does not disturb the readings.
+    pub fn blank_row(&mut self) {
+        let row = Grid::new();
+        row.set_column_spacing(8);
+        let label = Label::new(Some(" "));
+        label.add_css_class("llt-sensor-label");
+        row.attach(&label, 0, 0, 1, 1);
+        self.root.append(&row);
+    }
 }
