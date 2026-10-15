@@ -1,0 +1,79 @@
+# Flatpak manifest for Legion Toolkit.
+#
+# Build and export to a local repo:
+#
+#   ./packaging/flatpak/generate-cargo-sources.sh   # once, and after a dependency change
+#   make flatpak
+#
+# Then install from the local repo:
+#
+#   flatpak --user remote-add --no-gpg-verify legiontoolkit file://$PWD/target/flatpak-repo
+#   flatpak --user install legiontoolkit org.legiontoolkit.Ltk
+#
+# The runtime must ship GTK 4.22 / libadwaita 1.9. `org.gnome.Platform` 50 does;
+# older branches do not, and the build will fail on the gtk4 version check.
+app-id: org.legiontoolkit.Ltk
+runtime: org.gnome.Platform
+runtime-version: '50'
+sdk: org.gnome.Sdk
+command: legiontoolkit
+
+finish-args:
+  # --- display ---
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+
+  # --- hardware ---
+  # /dev/hidraw* (the RGB keyboard), /dev/nvme*, /dev/cpu/* and the rest of the
+  # sensor surface. The project's udev rule grants the session access to the
+  # hidraw node, so the Lighting page works with no privilege at all.
+  - --device=all
+  # Every reading comes from /sys and /proc. Read-only is all the sandbox needs:
+  # the writes go to the helper on the host, below.
+  - --filesystem=host:ro
+
+  # --- privileged writes ---
+  # The helper is a host binary. `flatpak-spawn --host` runs it there and the
+  # host's pkexec raises it to root, exactly as it does outside the sandbox; see
+  # src/services/privilege.rs. Without these, the app still reads everything and
+  # says plainly that writes are unavailable.
+  - --talk-name=org.freedesktop.Flatpak
+  - --system-talk-name=org.freedesktop.PolicyKit1
+
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/legiontoolkit/cargo
+    # The helper lives on the host, not in the sandbox: the sandbox reaches it
+    # through `flatpak-spawn --host`.
+    LEGIONTOOLKIT_HELPER_PATH: /usr/libexec/legiontoolkit-helper
+
+modules:
+  - name: legiontoolkit
+    buildsystem: simple
+    build-commands:
+      # The helper and the probe are built without GTK, so neither can pull a GUI
+      # runtime into a root process.
+      - cargo build --release --offline --bin legiontoolkit
+      - cargo build --release --offline --bin legiontoolkit-helper --no-default-features
+      - cargo build --release --offline --bin legiontoolkit-keyboard-probe --no-default-features
+      - install -Dm755 target/release/legiontoolkit /app/bin/legiontoolkit
+      - install -Dm755 target/release/legiontoolkit-helper /app/libexec/legiontoolkit-helper
+      - install -Dm755 target/release/legiontoolkit-keyboard-probe /app/bin/legiontoolkit-keyboard-probe
+      # Flatpak wants the desktop file and the icon named after the app id.
+      - install -Dm644 packaging/legiontoolkit.desktop /app/share/applications/org.legiontoolkit.Ltk.desktop
+      - sed -i 's/^Icon=.*/Icon=org.legiontoolkit.Ltk/' /app/share/applications/org.legiontoolkit.Ltk.desktop
+      - install -Dm644 packaging/flatpak/org.legiontoolkit.Ltk.metainfo.xml /app/share/metainfo/org.legiontoolkit.Ltk.metainfo.xml
+      - for s in 16 22 24 32 48 64 128 256 512; do install -Dm644 packaging/icons/hicolor/${s}x${s}/apps/legiontoolkit.png /app/share/icons/hicolor/${s}x${s}/apps/org.legiontoolkit.Ltk.png; done
+      - install -Dm644 packaging/icons/hicolor/scalable/actions/github-symbolic.svg /app/share/icons/hicolor/scalable/actions/github-symbolic.svg
+    sources:
+      - type: git
+        url: https://github.com/adeerkhan/LenovoLegionLinuxToolkit.git
+        # Pin a tag for a release build rather than tracking the branch.
+        branch: main
+      - cargo-sources.json

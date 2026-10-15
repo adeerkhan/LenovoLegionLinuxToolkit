@@ -242,9 +242,15 @@ impl MainWindow {
         // ------------------------------------------------------------------
         // Warnings, above the whole page stack
         // ------------------------------------------------------------------
+        // Environment warnings — no helper installed, no polkit action — say
+        // nothing about the application, so they are suppressed when rendering a
+        // screenshot. They are always logged.
+        let shooting = crate::shot_request().is_some();
         let content_box = GtkBox::new(Orientation::Vertical, 0);
-        for warning in &warnings {
-            content_box.append(&warning_banner(warning));
+        if !shooting {
+            for warning in &warnings {
+                content_box.append(&warning_banner(warning));
+            }
         }
         content_box.append(&stack);
 

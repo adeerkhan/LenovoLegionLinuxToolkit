@@ -22,7 +22,7 @@ LEGIONTOOLKIT_NO_PASSWORD ?=
 
 CARGO      ?= cargo
 
-.PHONY: all check build install uninstall clean distcheck icon rpm
+.PHONY: all check build install uninstall clean distcheck icon rpm flatpak
 
 all: build
 build:
@@ -66,6 +66,21 @@ rpm:
 	    --define "_topdir $(CURDIR)/target/rpmbuild" \
 	    --define "_sourcedir $(CURDIR)/packaging/rpm"
 	@echo "RPM written under target/rpmbuild/RPMS/"
+
+# Build a Flatpak and export it to a local repository under target/.
+# packaging/flatpak/README.md covers the runtime, the crate sources and publishing.
+flatpak:
+	@test -f packaging/flatpak/cargo-sources.json || { \
+	    echo "packaging/flatpak/cargo-sources.json is missing — run packaging/flatpak/generate-cargo-sources.sh"; \
+	    exit 1; }
+	flatpak-builder --force-clean --user \
+	    --repo=$(CURDIR)/target/flatpak-repo \
+	    $(CURDIR)/target/flatpak-build \
+	    packaging/flatpak/org.legiontoolkit.Ltk.yml
+	flatpak build-update-repo --generate-static-deltas $(CURDIR)/target/flatpak-repo
+	@echo "built. Install with:"
+	@echo "  flatpak --user remote-add --no-gpg-verify legiontoolkit file://$(CURDIR)/target/flatpak-repo"
+	@echo "  flatpak --user install legiontoolkit org.legiontoolkit.Ltk"
 
 # Prints where things will land, without touching the system or compiling.
 # The fast way to sanity-check a PREFIX override before committing to it.

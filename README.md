@@ -260,11 +260,28 @@ on the same `Makefile` and `install.sh` a local install uses:
   the git source as an ordinary SCM package.
 - **Debian / Ubuntu** — `packaging/debian/` builds with `dpkg-buildpackage`.
 - **Arch** — `packaging/aur/PKGBUILD` builds with `makepkg -si`.
+- **Flatpak** — `packaging/flatpak/` holds the manifest and a `.flatpakref`; see
+  [Flatpak](#flatpak).
 
-Flatpak is deliberately not used. Its sandbox cannot write to `/sys`, and this
-project's privilege model needs a root helper outside the sandbox; a native
-package installs the helper, its polkit action and the udev rule together, which
-is exactly what the application needs.
+### Flatpak
+
+`packaging/flatpak/` builds the application as a Flatpak and ships a
+`.flatpakref`, so installing it is one command — or one click in GNOME Software:
+
+```sh
+flatpak install --from https://adeerkhan.github.io/LenovoLegionLinuxToolkit/flatpak/repo/org.legiontoolkit.Ltk.flatpakref
+```
+
+The sandbox reads hardware freely — `/sys` and `/proc` cover every sensor row —
+and the RGB keyboard works over `/dev/hidraw*`, which the udev rule already makes
+accessible. Privileged writes are the one part a sandbox cannot do alone: the
+helper is a host binary, and the Flatpak reaches it through
+`flatpak-spawn --host`, exactly as it does outside. Install the helper once with
+the RPM, DEB, AUR package or `sudo make install`, and every toggle and slider
+works; without it the application still reads everything and says so plainly.
+
+`packaging/flatpak/README.md` covers building it, publishing the repository, and
+what the sandbox can and cannot reach.
 
 ## Updating
 

@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.legiontoolkit.Ltk</id>
+
+  <name>Legion Toolkit</name>
+  <summary>Control panel for Lenovo Legion laptops</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <description>
+    <p>
+      A native GTK 4 / libadwaita control panel for Lenovo Legion laptops: power
+      modes, thermals and fan speed, the GPU working mode, battery charging, the
+      24-zone RGB keyboard, and named power presets.
+    </p>
+    <p>
+      Readings come from the Linux kernel's own drivers — hwmon, power_supply,
+      cpufreq, nvme — and need no extra service. Writes escalate through polkit
+      to a small helper, so the application itself never runs as root.
+    </p>
+    <p>Not officially affiliated with, endorsed by, or sponsored by Lenovo.</p>
+  </description>
+
+  <launchable type="desktop-id">org.legiontoolkit.Ltk.desktop</launchable>
+
+  <url type="homepage">https://github.com/adeerkhan/LenovoLegionLinuxToolkit</url>
+  <url type="bugtracker">https://github.com/adeerkhan/LenovoLegionLinuxToolkit/issues</url>
+
+  <categories>
+    <category>Settings</category>
+    <category>HardwareSettings</category>
+    <category>Utility</category>
+  </categories>
+
+  <keywords>
+    <keyword>Legion</keyword>
+    <keyword>Lenovo</keyword>
+    <keyword>laptop</keyword>
+    <keyword>fan</keyword>
+    <keyword>thermal</keyword>
+    <keyword>battery</keyword>
+    <keyword>RGB</keyword>
+    <keyword>power</keyword>
+  </keywords>
+
+  <content_rating type="oars-1.1" />
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>Home — the sensor row and the headline controls</caption>
+      <image type="source">https://raw.githubusercontent.com/adeerkhan/LenovoLegionLinuxToolkit/main/assets/home.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>The 24-zone RGB keyboard editor</caption>
+      <image type="source">https://raw.githubusercontent.com/adeerkhan/LenovoLegionLinuxToolkit/main/assets/lighting.png</image>
+    </screenshot>
+  </screenshots>
+
+  <releases>
+    <release version="0.1.0" date="2026-10-14" />
+  </releases>
+</component>

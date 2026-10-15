@@ -1815,7 +1815,7 @@ fn rgb_section() -> Option<GtkBox> {
     tail.set_valign(Align::Center);
 
     // The effect in force, named above the picker as the reference names it.
-    let current = Label::new(Some(Effect::Static.label()));
+    let current = Label::new(Some(state.borrow().effect.label()));
     current.add_css_class("llt-card-title");
     current.set_halign(Align::Start);
     tail.append(&current);

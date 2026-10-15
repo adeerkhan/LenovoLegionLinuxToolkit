@@ -26,9 +26,33 @@ pub const HELPER_PATH: &str = match option_env!("LEGIONTOOLKIT_HELPER_PATH") {
     None => "/usr/libexec/legiontoolkit-helper",
 };
 
+/// Whether this process is running inside the Flatpak sandbox.
+///
+/// Under Flatpak neither `pkexec` nor the helper is in the sandbox: both live on
+/// the host and are reached through `flatpak-spawn --host`.
+fn in_flatpak() -> bool {
+    std::path::Path::new("/.flatpak-info").exists()
+}
+
+/// Run a command on the host, for the Flatpak case. `true` when it succeeded.
+fn on_host(args: &[&str]) -> bool {
+    Command::new("flatpak-spawn")
+        .arg("--host")
+        .args(args)
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 /// Whether the pkexec + helper path can work at all on this system.
 pub fn is_escalation_available() -> bool {
-    which("pkexec") && std::path::Path::new(HELPER_PATH).exists()
+    if in_flatpak() {
+        // Sandboxed: ask the host, where both actually live.
+        on_host(&["sh", "-c", "command -v pkexec >/dev/null"])
+            && on_host(&["test", "-x", HELPER_PATH])
+    } else {
+        which("pkexec") && std::path::Path::new(HELPER_PATH).exists()
+    }
 }
 
 fn which(bin: &str) -> bool {
@@ -69,12 +93,20 @@ pub fn request(key: &str, value: &str) -> anyhow::Result<()> {
     // pkexec's own diagnostics — no polkit agent, not authorised, action not
     // found — are the whole explanation when a password prompt succeeds but the
     // write still fails.
-    let output = Command::new("pkexec")
-        .arg(HELPER_PATH)
-        .arg("set")
-        .arg(key)
-        .arg(value)
-        .output()?;
+    let output = if in_flatpak() {
+        // The helper is on the host; `flatpak-spawn --host` runs it there, and
+        // the host's pkexec raises it to root.
+        Command::new("flatpak-spawn")
+            .args(["--host", "pkexec", HELPER_PATH, "set", key, value])
+            .output()?
+    } else {
+        Command::new("pkexec")
+            .arg(HELPER_PATH)
+            .arg("set")
+            .arg(key)
+            .arg(value)
+            .output()?
+    };
 
     if output.status.success() {
         return Ok(());
@@ -126,6 +158,10 @@ fn explain(key: &str, output: &std::process::Output) -> String {
 /// this class of failure is invisible otherwise, and every cause has a
 /// different fix.
 pub fn diagnose() -> Vec<String> {
+    if in_flatpak() {
+        return diagnose_flatpak();
+    }
+
     let mut findings = Vec::new();
 
     let helper = std::path::Path::new(HELPER_PATH);
@@ -171,6 +207,25 @@ pub fn diagnose() -> Vec<String> {
             "no polkit action in {} declares exec.path {HELPER_PATH}. pkexec will not \
              authorise the helper without it",
             dirs.join(", ")
+        ));
+    }
+
+    findings
+}
+
+/// The Flatpak case: the helper, `pkexec` and the polkit action are all on the
+/// host, so nothing in the sandbox's own filesystem can be checked here.
+fn diagnose_flatpak() -> Vec<String> {
+    let mut findings = Vec::new();
+
+    if !on_host(&["sh", "-c", "command -v pkexec >/dev/null"]) {
+        findings.push("`pkexec` is not on the host's PATH (install polkit)".to_string());
+    }
+    if !on_host(&["test", "-x", HELPER_PATH]) {
+        findings.push(format!(
+            "the helper is not installed on the host at {HELPER_PATH} — install the RPM, DEB \
+             or AUR package (or run `sudo make install`) so privileged writes work from the \
+             Flatpak"
         ));
     }
 

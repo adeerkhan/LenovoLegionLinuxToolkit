@@ -1,0 +1,10 @@
+[Flatpak Ref]
+Title=Legion Toolkit
+Name=org.legiontoolkit.Ltk
+Comment=Control panel for Lenovo Legion laptops
+Url=https://adeerkhan.github.io/LenovoLegionLinuxToolkit/flatpak/repo/
+Branch=stable
+SuggestRemoteName=legiontoolkit
+RuntimeRepo=https://dl.flathub.org/repo/flathub.flatpakrepo
+IsRuntime=false
+GPGKey=
