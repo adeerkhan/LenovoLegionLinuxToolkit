@@ -122,6 +122,11 @@ impl Effect {
         )
     }
 
+    /// Whether the effect moves, so the on-screen preview should animate it.
+    pub fn is_animated(self) -> bool {
+        !matches!(self, Self::Static)
+    }
+
     /// Whether the effect has a direction.
     pub fn uses_direction(self) -> bool {
         matches!(

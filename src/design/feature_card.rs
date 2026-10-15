@@ -180,6 +180,8 @@ impl FeatureCard {
         let dd = DropDown::from_strings(&labels);
         dd.set_halign(Align::End);
         dd.set_valign(Align::Center);
+        // Fixed width: the selected label's length must not resize the card.
+        dd.set_size_request(200, -1);
         self.card.set_accessory(&dd);
         self.dropdown = Some((dd, values));
     }
@@ -193,6 +195,8 @@ impl FeatureCard {
         let spin = SpinButton::with_range(limits.min, limits.max, limits.step);
         spin.set_halign(Align::End);
         spin.set_valign(Align::Center);
+        // Fixed width: a value gaining a digit must not shift the card's layout.
+        spin.set_width_chars(4);
         self.spin = Some(spin.clone());
 
         // A bare number is not a value. Show the unit beside the control so

@@ -13,7 +13,7 @@
 //!   cards. We surface what sysfs actually reports instead of inventing
 //!   placeholders for the rest.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -201,16 +201,30 @@ impl CapabilityPage {
         let mut unavailable: Vec<Arc<Capability>> = Vec::new();
 
         if let Some(sections) = self.sections.clone() {
-            for (title, predicate) in sections {
+            // Work out which sections have anything before drawing any of
+            // them: a page with a single section needs no title, because its
+            // heading would only repeat the page title.
+            let prepared: Vec<(&'static str, Vec<Arc<Capability>>)> = sections
+                .iter()
+                .map(|(title, predicate)| {
+                    let caps: Vec<Arc<Capability>> = self
+                        .caps
+                        .borrow()
+                        .iter()
+                        .filter(|c| predicate(c))
+                        .cloned()
+                        .collect();
+                    (*title, caps)
+                })
+                .collect();
+            let non_empty = prepared
+                .iter()
+                .filter(|(_, caps)| caps.iter().any(|c| c.is_available()))
+                .count();
+
+            for (title, caps) in prepared {
                 let grid = self.section_grid();
                 let mut shown = 0i32;
-                let caps: Vec<Arc<Capability>> = self
-                    .caps
-                    .borrow()
-                    .iter()
-                    .filter(|c| predicate(c))
-                    .cloned()
-                    .collect();
                 for cap in caps {
                     if !cap.is_available() {
                         unavailable.push(cap);
@@ -223,9 +237,12 @@ impl CapabilityPage {
                     self.cards.borrow_mut().push(card);
                     shown += 1;
                 }
-                // Only title a section that has something in it.
+                // Only title a section that has something in it, and only when
+                // there is more than one such section.
                 if shown > 0 {
-                    self.page.heading(title);
+                    if non_empty >= 2 {
+                        self.page.heading(title);
+                    }
                     self.page.append(&grid);
                 }
             }
@@ -1082,22 +1099,15 @@ fn about_page_body(
         });
         page.append(&revealer);
 
+        // One line: the affiliation note follows the build note in the same
+        // paragraph rather than dangling on a line of its own.
         let note = Label::new(Some(
-            "Built on GTK 4 and libadwaita. Hardware access via LenovoLegionLinux and the Linux kernel.",
+            "Built on GTK 4 and libadwaita. Hardware access via LenovoLegionLinux and the Linux kernel. Not officially affiliated with Lenovo.",
         ));
         note.add_css_class("llt-card-note");
         note.set_wrap(true);
         note.set_margin_top(16);
         page.append(&note);
-
-        // The disclaimer, on its own line so it is not read as part of the
-        // sentence above.
-        let affiliation = Label::new(Some("Not officially affiliated with Lenovo."));
-        affiliation.add_css_class("llt-card-note");
-        affiliation.set_halign(Align::Start);
-        affiliation.set_wrap(true);
-        affiliation.set_margin_top(4);
-        page.append(&affiliation);
     })
 }
 
@@ -1619,6 +1629,13 @@ fn rgb_section() -> Option<GtkBox> {
     keyboard.set_valign(Align::Start);
 
     let rows = legiontoolkit::rgb::keyboard_rows();
+    // Widest row, in key units: used for the widget's size and to normalise each
+    // key's position for the effect preview.
+    let total_width: f64 = rows
+        .iter()
+        .map(|keys| keys.iter().map(|(_, w)| *w).sum::<f64>())
+        .fold(0.0, f64::max);
+
     let mut zone_keys: Vec<ZoneKey> = Vec::new();
     for (row, keys) in rows.iter().enumerate() {
         let mut x = 0.0;
@@ -1646,17 +1663,17 @@ fn rgb_section() -> Option<GtkBox> {
                     zone,
                     button,
                     provider,
+                    // Where the key sits, 0..1 across and down the board, so the
+                    // effect preview can run a wave over it.
+                    u: (x + width * KEY / 2.0) / (total_width * KEY),
+                    v: row as f64 / (rows.len().saturating_sub(1).max(1)) as f64,
                 });
             }
             x += width * KEY;
         }
     }
-    let width = rows
-        .iter()
-        .map(|keys| keys.iter().map(|(_, w)| *w).sum::<f64>())
-        .fold(0.0, f64::max);
     keyboard.set_size_request(
-        (width * KEY).round() as i32,
+        (total_width * KEY).round() as i32,
         (rows.len() as f64 * ROW_H).round() as i32,
     );
     let zone_keys = Rc::new(zone_keys);
@@ -1686,6 +1703,46 @@ fn rgb_section() -> Option<GtkBox> {
             }
         });
     }
+
+    // --- Live effect preview -------------------------------------------
+    // The reference animates the keyboard while an effect is selected, so it can
+    // be seen before it is applied. A timer advances a phase and repaints the
+    // keys: rainbow effects run a spectrum across the board, and the
+    // colour-carrying effects pulse their zone colour along a moving wave.
+    //
+    // It paints only while the page is on screen and the effect moves; a static
+    // look leaves the stored zone colours alone.
+    let phase = Rc::new(Cell::new(0.0f64));
+    let was_animating = Rc::new(Cell::new(false));
+    glib::timeout_add_local(std::time::Duration::from_millis(60), {
+        let state = Rc::clone(&state);
+        let zone_keys = Rc::clone(&zone_keys);
+        let phase = Rc::clone(&phase);
+        let was_animating = Rc::clone(&was_animating);
+        let keyboard = keyboard.clone();
+        move || {
+            if !keyboard.is_mapped() {
+                return glib::ControlFlow::Continue;
+            }
+            let (effect, off) = {
+                let state = state.borrow();
+                (state.effect, state.off)
+            };
+            let animating = !off && effect.is_animated();
+            if animating {
+                let now = phase.get();
+                let zones = state.borrow().zones;
+                paint_preview(&zone_keys, effect, &zones, now);
+                phase.set((now + 0.02).fract());
+            } else if was_animating.get() {
+                // Leaving an animated effect: put the stored colours back.
+                let zones = state.borrow().zones;
+                paint_zones(&zone_keys, &zones);
+            }
+            was_animating.set(animating);
+            glib::ControlFlow::Continue
+        }
+    });
 
     // The column beside the keyboard: what a colour targets, and a fast
     // select-all / clear.
@@ -1979,6 +2036,9 @@ struct ZoneKey {
     zone: usize,
     button: gtk4::Button,
     provider: gtk4::CssProvider,
+    /// Where the key sits, 0..1 across and down the board, for the preview.
+    u: f64,
+    v: f64,
 }
 
 /// Repaint every key from the zone colours.
@@ -1989,10 +2049,65 @@ fn paint_zones(keys: &[ZoneKey], zones: &[[u8; 3]; legiontoolkit::rgb::NUM_ZONES
     }
 }
 
+/// Repaint every key for an animated effect preview at `phase` (0..1).
+///
+/// The rainbow effects run a spectrum across the board — a wave left to right,
+/// or a spiral by adding the key's row. The colour-carrying effects keep their
+/// zone's colour and pulse it along the same wave, which is what those effects
+/// do on the hardware.
+fn paint_preview(
+    keys: &[ZoneKey],
+    effect: legiontoolkit::rgb::Effect,
+    zones: &[[u8; 3]; legiontoolkit::rgb::NUM_ZONES],
+    phase: f64,
+) {
+    use legiontoolkit::rgb::Effect;
+    for key in keys {
+        let rgb = match effect {
+            Effect::ScrewRainbow => hsv_to_rgb((key.u + key.v - phase).rem_euclid(1.0), 1.0, 1.0),
+            Effect::RainbowWave => hsv_to_rgb((key.u - phase).rem_euclid(1.0), 1.0, 1.0),
+            _ => {
+                // A travelling pulse: dark on the leading edge, bright behind it.
+                let wave = (key.u * 6.0 - phase * std::f64::consts::TAU * 2.0).sin() * 0.5 + 0.5;
+                scale_rgb(zones[key.zone], 0.35 + 0.65 * wave)
+            }
+        };
+        key.provider.load_from_string(&key_colour_css(rgb));
+    }
+}
+
+/// Scale a colour's brightness, keeping it inside 0..=255.
+fn scale_rgb(rgb: [u8; 3], factor: f64) -> [u8; 3] {
+    rgb.map(|c| (c as f64 * factor).round().clamp(0.0, 255.0) as u8)
+}
+
+/// HSV to RGB, `h` in turns (`0..1`), `s` and `v` in `0..1`.
+fn hsv_to_rgb(h: f64, s: f64, v: f64) -> [u8; 3] {
+    let h = h.rem_euclid(1.0) * 6.0;
+    let i = h.floor() as i64;
+    let f = h - h.floor();
+    let p = v * (1.0 - s);
+    let q = v * (1.0 - s * f);
+    let t = v * (1.0 - s * (1.0 - f));
+    let (r, g, b) = match i.rem_euclid(6) {
+        0 => (v, t, p),
+        1 => (q, v, p),
+        2 => (p, v, t),
+        3 => (p, q, v),
+        4 => (t, p, v),
+        _ => (v, p, q),
+    };
+    [
+        (r * 255.0).round() as u8,
+        (g * 255.0).round() as u8,
+        (b * 255.0).round() as u8,
+    ]
+}
+
 /// CSS that paints one keyboard key its zone's colour.
 fn key_colour_css(rgb: [u8; 3]) -> String {
     format!(
-        "button {{ background-color: #{:02x}{:02x}{:02x}; border-radius: 4px;          padding: 0; min-height: 0; }}",
+        "button {{ background-color: #{:02x}{:02x}{:02x}; border-radius: 4px; padding: 0; min-height: 0; }}",
         rgb[0], rgb[1], rgb[2]
     )
 }
