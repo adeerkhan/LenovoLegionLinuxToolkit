@@ -286,20 +286,6 @@ destination-root check still apply — and it is reversible:
 sudo rm /etc/polkit-1/rules.d/49-legiontoolkit.rules
 ```
 
-### Optional: the kernel module
-
-`legion_laptop` from [LenovoLegionLinux](https://github.com/johnfanv2/LenovoLegionLinux)
-adds the keyboard backlight, Y-logo and IO-port LEDs, GPU working mode, G-Sync,
-Windows-key lock and Instant Boot. Everything backed by `ideapad_acpi` — battery,
-Fn-lock, touchpad, camera, always-on USB — and the whole Home sensor row work
-without it.
-
-```sh
-cd Reference/LenovoLegionLinux/kernel_module
-make
-sudo make reloadmodule
-```
-
 ### Uninstall
 
 ```sh
@@ -434,8 +420,7 @@ This project stands on a lot of other people's reverse engineering.
   Fan — the kernel driver and userspace toolkit that makes every hardware
   capability this application exposes possible. Its documentation of the DMI
   allowlist and the per-model capability matrix is what made writing correct code
-  on an undocumented machine possible; the vendored copy under `Reference/` was
-  the hardware reference throughout.
+  on an undocumented machine possible.
 - **[keyRGB](https://github.com/Rainexn0b/keyRGB)** by Rainexn0b — the Linux tray
   app whose reverse engineering of the Lenovo Gen10 **24-zone ITE keyboard
   controller** is the basis of this project's own RGB implementation
@@ -445,14 +430,10 @@ This project stands on a lot of other people's reverse engineering.
   exist because that work came first.
 - **[Lenovo Legion Toolkit](https://github.com/LenovoLegionToolkit-Team/LenovoLegionToolkit)** —
   the Windows original, and the reference for the feature set, information
-  architecture and visual language reproduced here. The copy vendored under
-  `Reference/` is theirs.
+  architecture and visual language reproduced here.
 - **Vitals** (by corecoding / tjormola) — the GNOME Shell extension whose global
   `hwmon` sweep taught this project to find fan RPM where a driver-specific
   lookup found none.
-
-No code is copied from any of them. This project reimplements interfaces and
-behaviour, and communicates across documented boundaries.
 
 ## License
 
