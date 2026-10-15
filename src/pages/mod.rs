@@ -1605,47 +1605,60 @@ fn rgb_section() -> Option<GtkBox> {
     let layout = GtkBox::new(Orientation::Horizontal, 24);
 
     // The controller addresses 24 regions rather than keys, so every key takes
-    // the colour of the region it lands in (see `rgb::zone_for_key`). Drawing a
-    // real keyboard is what makes the zones legible: you can see which keys a
-    // colour touches instead of counting abstract boxes.
-    let keyboard = gtk4::Grid::new();
+    // the colour of the region it lands in (see `rgb::zone_for_key`). Every key
+    // is placed at an absolute position: a row of boxes cannot keep the keypad's
+    // columns lined up, because each row's inter-key spacing accumulates
+    // differently. Absolute placement is what makes it read as a keyboard.
+    const KEY: f64 = 34.0;
+    const ROW_H: f64 = 32.0;
+    const GAP: f64 = 3.0;
+
+    let keyboard = gtk4::Fixed::new();
     keyboard.add_css_class("llt-keyboard");
-    keyboard.set_row_spacing(4);
-    keyboard.set_column_spacing(4);
     keyboard.set_halign(Align::Start);
     keyboard.set_valign(Align::Start);
 
+    let rows = legiontoolkit::rgb::keyboard_rows();
     let mut zone_keys: Vec<ZoneKey> = Vec::new();
-    for (row, keys) in legiontoolkit::rgb::keyboard_rows().iter().enumerate() {
-        let line = GtkBox::new(Orientation::Horizontal, 2);
-        line.set_halign(Align::Start);
+    for (row, keys) in rows.iter().enumerate() {
+        let mut x = 0.0;
         for (col, (label, width)) in keys.iter().enumerate() {
-            // An empty label is a spacer, not a key: the gap that lines the
-            // short arrow row up under the rest of the keyboard.
-            if label.is_empty() {
-                let gap = GtkBox::new(Orientation::Horizontal, 0);
-                gap.set_size_request((width * 26.0) as i32, 22);
-                line.append(&gap);
-                continue;
+            // An empty label is a spacer, not a key: it holds the columns open
+            // so the keypad lines up on every row.
+            if !label.is_empty() {
+                let zone = legiontoolkit::rgb::zone_for_key(row, col);
+                let button = match label.strip_prefix("icon:") {
+                    Some(icon) => gtk4::Button::from_icon_name(icon),
+                    None => gtk4::Button::with_label(label),
+                };
+                button.set_size_request(
+                    (width * KEY - GAP).round() as i32,
+                    (ROW_H - GAP).round() as i32,
+                );
+                button.set_focus_on_click(false);
+                let provider = gtk4::CssProvider::new();
+                provider.load_from_string(&key_colour_css(state.borrow().zones[zone]));
+                button.style_context().add_provider(&provider, 800);
+                keyboard.put(&button, x, row as f64 * ROW_H);
+                zone_keys.push(ZoneKey {
+                    row,
+                    col,
+                    zone,
+                    button,
+                    provider,
+                });
             }
-            let zone = legiontoolkit::rgb::zone_for_key(row, col);
-            let button = gtk4::Button::with_label(label);
-            button.set_size_request((width * 26.0) as i32, 22);
-            button.set_focus_on_click(false);
-            let provider = gtk4::CssProvider::new();
-            provider.load_from_string(&key_colour_css(state.borrow().zones[zone]));
-            button.style_context().add_provider(&provider, 800);
-            line.append(&button);
-            zone_keys.push(ZoneKey {
-                row,
-                col,
-                zone,
-                button,
-                provider,
-            });
+            x += width * KEY;
         }
-        keyboard.attach(&line, 0, row as i32, 1, 1);
     }
+    let width = rows
+        .iter()
+        .map(|keys| keys.iter().map(|(_, w)| *w).sum::<f64>())
+        .fold(0.0, f64::max);
+    keyboard.set_size_request(
+        (width * KEY).round() as i32,
+        (rows.len() as f64 * ROW_H).round() as i32,
+    );
     let zone_keys = Rc::new(zone_keys);
 
     // Picking a colour on a key applies it to every zone the current Target

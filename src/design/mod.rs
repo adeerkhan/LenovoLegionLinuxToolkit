@@ -106,11 +106,17 @@ pub const STYLE_CSS: &str = r#"
 }
 
 /* The 24-zone keyboard shape on the Lighting page: a framed panel with the
-   zone rows staggered inside it, so it reads as a keyboard. */
+   keys placed on a fixed grid, so the keypad columns line up down the board. */
 .llt-keyboard {
     background-color: alpha(currentColor, 0.05);
     border-radius: 6px;
     padding: 8px;
+}
+
+/* Key labels, small enough that multi-letter names (Enter, Shift, Num) fit. */
+.llt-keyboard button {
+    font-size: 10px;
+    font-weight: 600;
 }
 
 /* The reference's data bars are blue even though its brand accent is red: the

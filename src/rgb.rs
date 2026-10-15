@@ -143,21 +143,29 @@ impl Effect {
 
 /// The physical keyboard, as rows of `(label, width in key units)`.
 ///
-/// A standard ANSI layout, following the reference's Keyboard Backlight page:
-/// the top row carries `Prt`/`Ins`/`Del`, a `Home`/`End`/`PgUp`/`PgDn`
-/// navigation cluster sits between the main block and the numeric keypad, and
-/// the arrow keys form an inverted-T under the right hand. Used only to draw the
-/// zone editor: it is the shape the user recognises, and it lets each zone be
-/// shown where it actually sits on the deck rather than as an abstract grid.
+/// A full ANSI layout, following the reference's Keyboard Backlight page: the
+/// top row carries `Prt`/`Ins`/`Del`, a clean one-unit gap separates the main
+/// block from the numeric keypad, and the arrow keys form an inverted-T in that
+/// gap under the right hand. Used only to draw the zone editor: it is the shape
+/// the user recognises, and it lets each zone be shown where it actually sits on
+/// the deck rather than as an abstract grid.
 ///
-/// A key whose label is empty is a **spacer**: a gap, not a key, used to line
-/// the short arrow row up under the rest of the keyboard.
+/// The layout is built so the keypad lands in the same columns on every row —
+/// that is what makes it read as a keyboard rather than a pile of keys. Every
+/// main-block row is exactly 15 units wide and the keypad always starts at 16,
+/// with a one-unit gap between them. A key whose label is empty is a **spacer**:
+/// a gap, not a key, that holds those columns open on the rows that do not reach
+/// them.
 ///
 /// The reference draws a 24-zone keyboard as 24 bars; drawing the whole
 /// keyboard and colouring each key by its zone is clearer, which is what we do.
+///
+/// A label beginning `icon:` names a symbolic icon to draw instead of text —
+/// used for the media keys on the function row, which have no short label.
 pub fn keyboard_rows() -> &'static [&'static [(&'static str, f64)]] {
     &[
-        // Function row, with the Print Screen / Insert / Delete group.
+        // Function row: Esc, F1..F12, Prt / Ins / Del, then the media keys
+        // sitting above the keypad. 20 units, matching the rows below.
         &[
             ("Esc", 1.0),
             ("F1", 1.0),
@@ -175,8 +183,12 @@ pub fn keyboard_rows() -> &'static [&'static [(&'static str, f64)]] {
             ("Prt", 1.0),
             ("Ins", 1.0),
             ("Del", 1.0),
+            ("icon:media-skip-backward-symbolic", 1.0),
+            ("icon:media-playback-stop-symbolic", 1.0),
+            ("icon:media-skip-forward-symbolic", 1.0),
+            ("icon:media-playback-start-symbolic", 1.0),
         ],
-        // Number row, the top of the navigation cluster, then the keypad top.
+        // Number row (15), gap (1), keypad top (4).
         &[
             ("~", 1.0),
             ("1", 1.0),
@@ -192,14 +204,13 @@ pub fn keyboard_rows() -> &'static [&'static [(&'static str, f64)]] {
             ("-", 1.0),
             ("=", 1.0),
             ("Back", 2.0),
-            ("Home", 1.0),
-            ("PgUp", 1.0),
+            ("", 1.0),
             ("Num", 1.0),
             ("/", 1.0),
             ("*", 1.0),
             ("-", 1.0),
         ],
-        // Tab row, the bottom of the navigation cluster, then keypad 7/8/9.
+        // Tab row (15), gap (1), keypad 7/8/9/+ (4).
         &[
             ("Tab", 1.5),
             ("Q", 1.0),
@@ -215,13 +226,13 @@ pub fn keyboard_rows() -> &'static [&'static [(&'static str, f64)]] {
             ("[", 1.0),
             ("]", 1.0),
             ("\\", 1.5),
-            ("End", 1.0),
-            ("PgDn", 1.0),
+            ("", 1.0),
             ("7", 1.0),
             ("8", 1.0),
             ("9", 1.0),
             ("+", 1.0),
         ],
+        // Caps row (15), gap (1), keypad 4/5/6/+ (4).
         &[
             ("Caps", 1.75),
             ("A", 1.0),
@@ -236,11 +247,13 @@ pub fn keyboard_rows() -> &'static [&'static [(&'static str, f64)]] {
             (";", 1.0),
             ("'", 1.0),
             ("Enter", 2.25),
+            ("", 1.0),
             ("4", 1.0),
             ("5", 1.0),
             ("6", 1.0),
             ("+", 1.0),
         ],
+        // Shift row (15), gap (1), keypad 1/2/3/Enter (4).
         &[
             ("Shift", 2.25),
             ("Z", 1.0),
@@ -254,12 +267,13 @@ pub fn keyboard_rows() -> &'static [&'static [(&'static str, f64)]] {
             (".", 1.0),
             ("/", 1.0),
             ("Shift", 2.75),
+            ("", 1.0),
             ("1", 1.0),
             ("2", 1.0),
             ("3", 1.0),
             ("Ent", 1.0),
         ],
-        // Bottom row, the up arrow, then the keypad's zero.
+        // Bottom row (15), the up arrow in the gap (1), then keypad 0 . Ent.
         &[
             ("Ctrl", 1.25),
             ("Fn", 1.25),
@@ -270,11 +284,11 @@ pub fn keyboard_rows() -> &'static [&'static [(&'static str, f64)]] {
             ("Fn", 1.25),
             ("Ctrl", 1.25),
             ("↑", 1.0),
-            ("0", 1.0),
+            ("0", 2.0),
             (".", 1.0),
+            ("Ent", 1.0),
         ],
-        // The arrow cluster's lower row, pushed right so ↓ sits under ↑. The
-        // leading spacer spans the keys that end above it in the row above.
+        // The arrow cluster's lower row, pushed right so ↓ sits under ↑.
         &[("", 14.0), ("←", 1.0), ("↓", 1.0), ("→", 1.0)],
     ]
 }
