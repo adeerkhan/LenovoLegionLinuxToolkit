@@ -5,7 +5,7 @@ Version:        0.1.0
 Release:        1%{?dist}
 Summary:        Native control panel for Lenovo Legion laptops
 
-License:        GPL-3.0-or-later
+License:        MIT
 URL:            https://github.com/adeerkhan/LenovoLegionLinuxToolkit
 Source0:        %{name}-%{version}.tar.gz
 

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 description = "A native GTK4/libadwaita control panel for Lenovo Legion laptops"
-license = "GPL-3.0-or-later"
+license = "MIT"
 repository = "https://github.com/adeerkhan/LenovoLegionLinuxToolkit"
 default-run = "legiontoolkit"
 

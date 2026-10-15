@@ -96,14 +96,41 @@ and a disabled switch cannot tell them apart.
 
 ## Compatibility
 
-- **Any Legion laptop**, with or without the out-of-tree driver.
+- **Any Lenovo Legion laptop**, with or without the out-of-tree driver. Battery,
+  readings and the sensor row work with **no driver at all** — the kernel's own
+  drivers already expose them.
+- The machines the **`legion_laptop`** kernel module supports — Legion, Legion
+  Go, IdeaPad Gaming, LOQ, and some Lenovo Slim and ThinkBook models — also get
+  the keyboard backlight, Y-logo and IO-port LEDs, GPU working mode, G-Sync,
+  Windows-key lock and Instant Boot.
+- Anything that is not a Lenovo is out of scope: the interfaces this application
+  reads are not there, and nothing here can change that.
 - Verified in depth on a **Lenovo Legion 5 15IRX10 (83LY, BIOS QNCN38WW)**,
   kernel 7.2, Fedora 44 — including the 24-zone RGB keyboard.
-- Batteries, readings and the sensor row work with **no driver at all**; the
-  kernel's in-tree drivers already expose them.
 - **RGB keyboards**: Lenovo Gen10 24-zone (`048d:c195`) and per-key+chassis
   (`048d:c197`). Other keyboards still get the WMI on/off/brightness control.
 - AMD and Intel CPUs; NVIDIA GPUs via `nvidia-smi`; AMD GPUs read from sysfs.
+
+**The list of machines this has been verified on is one laptop long, and your
+help is what grows it.** A report from another Legion is worth far more than any
+amount of guessing.
+
+To add yours:
+
+1. [Install it](#installation) and run it. The Home sensor row and the Battery
+   page need no setup at all.
+2. Walk the pages and note what works, what does not, and what crashes.
+3. Open an
+   [issue](https://github.com/adeerkhan/LenovoLegionLinuxToolkit/issues) with:
+   - the **full model name** and BIOS version — the About page's *Machine* row
+     has a copy button, so paste it straight in;
+   - the **Driver** and **Backend** lines from the About page (copy buttons);
+   - the features that work, that do not, and that crash the application;
+   - a log: `RUST_LOG=debug legiontoolkit 2>&1 | tee legion-toolkit.log`.
+
+Precision is what makes a report actionable. "The fan slider does nothing" is
+hard to act on; "the fan slider reads 2600 rpm and does nothing when moved, and
+the log says `permission denied` for `fan1_input`" is a fix.
 
 ## Requirements
 
@@ -405,12 +432,19 @@ strings — every row there has a copy button, so they can be pasted straight in
 
 ## Contributing
 
-`make check` is the gate this project must pass: `cargo fmt --check`,
-`cargo clippy --all-targets -- -D warnings`, and `cargo test --no-default-features`.
-The library half is deliberately GTK-free so the capability, path-resolution,
-policy and RGB-protocol layers are testable with no display.
+Any feedback helps, and an issue is often the only way a machine gets supported —
+the [compatibility](#compatibility) section says exactly what to include. Pull
+requests are welcome too; read [CONTRIBUTING.md](CONTRIBUTING.md) first, and run
+the gate before you send one:
 
-Bug reports are welcome with the log and About strings above.
+```sh
+make check       # cargo fmt --check, clippy with -D warnings, and the tests
+```
+
+The library half is deliberately GTK-free, so the capability, path-resolution,
+policy and RGB-protocol layers stay testable with no display.
+
+Bug reports are welcome with the log and the About page strings above.
 
 ## Thanks
 
@@ -437,6 +471,6 @@ This project stands on a lot of other people's reverse engineering.
 
 ## License
 
-GPL-3.0-or-later — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
 
 Not officially affiliated with Lenovo.
