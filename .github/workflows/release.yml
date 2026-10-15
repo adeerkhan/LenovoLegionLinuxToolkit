@@ -1,0 +1,141 @@
+name: Release
+
+# A tag builds the three published routes and attaches the packages to the
+# release: the RPM the COPR project also builds, the DEB the PPA also builds, and
+# the Flatpak repository the .flatpakref points at. Run it by hand
+# (workflow_dispatch) to produce the artifacts without a tag.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Fedora / RHEL — the RPM, built in the same container CI uses.
+  # ---------------------------------------------------------------------------
+  rpm:
+    name: RPM (Fedora 44)
+    runs-on: ubuntu-latest
+    container: fedora:44
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the build tools
+        run: |
+          dnf install -y --setopt=install_weak_deps=False \
+            gcc gcc-c++ make git rpm-build \
+            gtk4-devel libadwaita-devel pango-devel \
+            gdk-pixbuf2-devel cairo-gobject-devel graphene-devel
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # `make rpm` archives HEAD, so the tag must already be pushed — which it is
+      # for a tag build.
+      - name: Build the RPM
+        run: make rpm
+
+      - name: Upload the RPM as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm
+          path: target/rpmbuild/RPMS/**/*.rpm
+
+      - name: Attach it to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/rpmbuild/RPMS/**/*.rpm
+
+  # ---------------------------------------------------------------------------
+  # Ubuntu / Debian — the DEB, built on a series that ships GTK 4.22.
+  # Bump the container as new Ubuntu releases arrive; anything older than 25.10
+  # lacks GTK 4.22 and fails the build.
+  # ---------------------------------------------------------------------------
+  deb:
+    name: DEB (Ubuntu 25.10)
+    runs-on: ubuntu-latest
+    container: ubuntu:25.10
+    steps:
+      - name: Install the build tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates curl git \
+            debhelper devscripts \
+            libgtk-4-dev libadwaita-1-dev libpango1.0-dev \
+            libgdk-pixbuf-2.0-dev libcairo2-dev libgraphene-1.0-dev
+
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      # The .deb lands in the parent of the checkout; bring it into the
+      # workspace so the upload steps can see it.
+      - name: Build the package
+        run: |
+          dpkg-buildpackage -b -us -uc
+          mv ../legiontoolkit_*.deb .
+
+      - name: Upload the DEB as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: legiontoolkit_*.deb
+
+      - name: Attach it to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: legiontoolkit_*.deb
+
+  # ---------------------------------------------------------------------------
+  # Flatpak — build the repository and publish it to GitHub Pages, so the
+  # .flatpakref URL in the README resolves. Enable Pages for the repository
+  # first (Settings → Pages → Deploy from a branch → gh-pages).
+  # ---------------------------------------------------------------------------
+  flatpak:
+    name: Flatpak repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install flatpak and flatpak-builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak flatpak-builder python3-aiohttp
+
+      - name: Add Flathub and the runtime
+        run: |
+          sudo flatpak remote-add --if-not-exists flathub \
+            https://dl.flathub.org/repo/flathub.flatpakrepo
+          sudo flatpak install -y flathub \
+            org.gnome.Platform//50 org.gnome.Sdk//50 \
+            org.freedesktop.Sdk.Extension.rust-stable
+
+      - name: Regenerate the crate sources
+        run: ./packaging/flatpak/generate-cargo-sources.sh
+
+      - name: Build and export the repository
+        run: make flatpak
+
+      - name: Publish it to GitHub Pages
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: target/flatpak-repo
+          destination_dir: flatpak/repo

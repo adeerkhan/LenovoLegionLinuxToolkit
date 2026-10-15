@@ -162,18 +162,84 @@ The only extra package worth installing for GPU telemetry is NVIDIA's own driver
 
 ## Installation
 
+Pick the route for your distribution. Every route except Flatpak installs the
+application **and** the privileged helper it needs in one step.
+
+| Distribution | Route |
+|---|---|
+| Fedora / RHEL | [COPR repository](#fedora--rhel--copr) |
+| Ubuntu / Debian | [PPA](#ubuntu--debian--ppa) |
+| Any Linux | [Flatpak](#any-linux--flatpak) |
+| Arch | [AUR](#arch--aur) |
+| Anything else | [From source](#from-source) |
+
+All of them need **GTK 4.22 / libadwaita 1.9** — Fedora 44 and newer, Ubuntu
+25.10 "questing" and newer. On an older release, use the Flatpak: it carries its
+own runtime.
+
+### Fedora / RHEL — COPR
+
+```sh
+sudo dnf copr enable adeerkhan/legion-toolkit
+sudo dnf install legiontoolkit
+```
+
+Later updates arrive with `sudo dnf upgrade`. The COPR project builds
+`packaging/rpm/legiontoolkit.spec`, the same spec `make rpm` builds locally.
+
+### Ubuntu / Debian — PPA
+
+```sh
+sudo add-apt-repository ppa:adeerkhan/legion-toolkit
+sudo apt install legiontoolkit
+```
+
+The PPA builds for **25.10 "questing" and newer**; older releases lack GTK 4.22
+and would not start. On an older Ubuntu, use the Flatpak below.
+`packaging/ppa/README.md` covers the PPA itself.
+
+### Any Linux — Flatpak
+
+```sh
+flatpak install --from https://adeerkhan.github.io/LenovoLegionLinuxToolkit/flatpak/org.legiontoolkit.Ltk.flatpakref
+flatpak run org.legiontoolkit.Ltk
+```
+
+The Flatpak reads every sensor row and drives the RGB keyboard by itself, out of
+the box: readings come from `/sys` and `/proc`, and the keyboard over
+`/dev/hidraw*`. The one thing a sandbox cannot do alone is a **privileged
+write** — the helper is a host binary — so install the helper once with the COPR
+package, the PPA, or `make install` below. Privileged writes then go through
+`flatpak-spawn --host` to that helper, and every toggle and slider works. Without
+it the application still reads everything and says so plainly.
+
+`packaging/flatpak/README.md` covers building it, publishing the repository, and
+what the sandbox can and cannot reach.
+
+### Arch — AUR
+
+```sh
+yay -S legiontoolkit          # or: paru -S legiontoolkit
+```
+
+The `PKGBUILD` is in `packaging/aur/`.
+
+### From source
+
+```sh
+git clone https://github.com/adeerkhan/LenovoLegionLinuxToolkit.git
+cd LenovoLegionLinuxToolkit
+sudo make install
+legiontoolkit                 # or launch it from your app menu
+```
+
 `make install` builds the application and its privileged helper, installs the
-polkit policy, desktop entry, icons and a udev rule, and places the helper
+polkit policy, desktop entry, icons and the udev rule, and places the helper
 exactly where the policy names it. The Makefile owns every destination, so it is
 reversible with `make uninstall` and relocatable with a different `PREFIX`.
 
-This is a source install. The RPM, DEB and AUR packages build from these same
-sources (see [Packages](#packages)), but none is published to a repository yet,
-so your package manager cannot install it for you yet.
-
-### 1. Prerequisites
-
-GTK 4.22 / libadwaita 1.9 and a Rust toolchain (1.85 or newer):
+Prerequisites — a Rust toolchain (1.85 or newer) and the GTK development
+headers:
 
 ```sh
 # Fedora
@@ -183,15 +249,6 @@ sudo dnf install gtk4-devel libadwaita-devel pango-devel \
 # Ubuntu / Debian — 25.10 "questing" or newer; older releases lack GTK 4.22
 sudo apt install libgtk-4-dev libadwaita-1-dev libpango1.0-dev \
     libgdk-pixbuf-2.0-dev libcairo2-dev libgraphene-1.0-dev
-```
-
-### 2. Install
-
-```sh
-git clone https://github.com/adeerkhan/LenovoLegionLinuxToolkit.git
-cd LenovoLegionLinuxToolkit
-sudo make install
-legiontoolkit            # or launch it from your app menu
 ```
 
 Run `make distcheck` first to print the install layout without touching the
@@ -207,7 +264,7 @@ sudo install -Dm644 packaging/99-legiontoolkit-hidraw.rules \
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
-### 3. Privileged writes
+### Privileged writes
 
 Reads need no permissions. Each write escalates through polkit to the helper: the
 first write in a session prompts for your password and polkit then remembers the
@@ -229,7 +286,7 @@ destination-root check still apply — and it is reversible:
 sudo rm /etc/polkit-1/rules.d/49-legiontoolkit.rules
 ```
 
-### 4. Optional: the kernel module
+### Optional: the kernel module
 
 `legion_laptop` from [LenovoLegionLinux](https://github.com/johnfanv2/LenovoLegionLinux)
 adds the keyboard backlight, Y-logo and IO-port LEDs, GPU working mode, G-Sync,
@@ -243,45 +300,38 @@ make
 sudo make reloadmodule
 ```
 
-### 5. Uninstall
+### Uninstall
 
 ```sh
-sudo make uninstall        # binaries, policy, desktop entry, icons and rules
+# Fedora / RHEL
+sudo dnf remove legiontoolkit
+sudo dnf copr remove adeerkhan/legion-toolkit
+
+# Ubuntu / Debian
+sudo apt remove legiontoolkit
+sudo add-apt-repository --remove ppa:adeerkhan/legion-toolkit
+
+# Flatpak
+flatpak uninstall org.legiontoolkit.Ltk
+
+# From source
+sudo make uninstall           # binaries, policy, desktop entry, icons and rules
 ```
 
-### Packages
+### Packaging
 
-Not yet in a distribution repository, but the packaging sources are here, built
-on the same `Makefile` and `install.sh` a local install uses:
+Every route is built from the same sources under `packaging/`:
 
-- **Fedora / RHEL** — `make rpm` builds `packaging/rpm/legiontoolkit.spec`
-  (verified end-to-end on Fedora 44). For a repository, point a
-  [COPR](https://copr.fedorainfracloud.org/) project at that spec; it builds from
-  the git source as an ordinary SCM package.
-- **Debian / Ubuntu** — `packaging/debian/` builds with `dpkg-buildpackage`.
-- **Arch** — `packaging/aur/PKGBUILD` builds with `makepkg -si`.
-- **Flatpak** — `packaging/flatpak/` holds the manifest and a `.flatpakref`; see
-  [Flatpak](#flatpak).
-
-### Flatpak
-
-`packaging/flatpak/` builds the application as a Flatpak and ships a
-`.flatpakref`, so installing it is one command — or one click in GNOME Software:
-
-```sh
-flatpak install --from https://adeerkhan.github.io/LenovoLegionLinuxToolkit/flatpak/repo/org.legiontoolkit.Ltk.flatpakref
-```
-
-The sandbox reads hardware freely — `/sys` and `/proc` cover every sensor row —
-and the RGB keyboard works over `/dev/hidraw*`, which the udev rule already makes
-accessible. Privileged writes are the one part a sandbox cannot do alone: the
-helper is a host binary, and the Flatpak reaches it through
-`flatpak-spawn --host`, exactly as it does outside. Install the helper once with
-the RPM, DEB, AUR package or `sudo make install`, and every toggle and slider
-works; without it the application still reads everything and says so plainly.
-
-`packaging/flatpak/README.md` covers building it, publishing the repository, and
-what the sandbox can and cannot reach.
+- **Fedora / RHEL** — `packaging/rpm/legiontoolkit.spec`; `make rpm` builds it
+  locally, and the COPR project builds it from git.
+- **Ubuntu / Debian** — `packaging/debian/`; the PPA builds it, and
+  `dpkg-buildpackage -b -us -uc` builds it locally.
+- **Arch** — `packaging/aur/PKGBUILD`.
+- **Flatpak** — `packaging/flatpak/`; `make flatpak` builds it into a local
+  repository.
+- **Publishing** — `packaging/README.md` has the maintainer steps for the COPR
+  project, the PPA and the Flatpak repository; a tagged release builds the RPM
+  and the DEB and attaches them to the [releases page](https://github.com/adeerkhan/LenovoLegionLinuxToolkit/releases).
 
 ## Updating
 
