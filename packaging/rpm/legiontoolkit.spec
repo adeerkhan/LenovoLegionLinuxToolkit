@@ -54,6 +54,7 @@ DESTDIR=%{buildroot} PREFIX=%{_prefix} ./install.sh install
 %{_libexecdir}/legiontoolkit-helper
 %{_datadir}/applications/legiontoolkit.desktop
 %{_datadir}/icons/hicolor/*/apps/legiontoolkit.png
+%{_datadir}/icons/hicolor/scalable/actions/github-symbolic.svg
 %{_datadir}/polkit-1/actions/org.legiontoolkit.helper.policy
 %license LICENSE
 %doc README.md

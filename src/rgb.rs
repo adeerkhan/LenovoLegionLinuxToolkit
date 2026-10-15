@@ -143,14 +143,21 @@ impl Effect {
 
 /// The physical keyboard, as rows of `(label, width in key units)`.
 ///
-/// A standard ANSI layout. Used only to draw the zone editor: it is the shape
-/// the user recognises, and it lets each zone be shown where it actually sits on
-/// the deck rather than as an abstract grid.
+/// A standard ANSI layout, following the reference's Keyboard Backlight page:
+/// the top row carries `Prt`/`Ins`/`Del`, a `Home`/`End`/`PgUp`/`PgDn`
+/// navigation cluster sits between the main block and the numeric keypad, and
+/// the arrow keys form an inverted-T under the right hand. Used only to draw the
+/// zone editor: it is the shape the user recognises, and it lets each zone be
+/// shown where it actually sits on the deck rather than as an abstract grid.
+///
+/// A key whose label is empty is a **spacer**: a gap, not a key, used to line
+/// the short arrow row up under the rest of the keyboard.
 ///
 /// The reference draws a 24-zone keyboard as 24 bars; drawing the whole
 /// keyboard and colouring each key by its zone is clearer, which is what we do.
 pub fn keyboard_rows() -> &'static [&'static [(&'static str, f64)]] {
     &[
+        // Function row, with the Print Screen / Insert / Delete group.
         &[
             ("Esc", 1.0),
             ("F1", 1.0),
@@ -165,12 +172,11 @@ pub fn keyboard_rows() -> &'static [&'static [(&'static str, f64)]] {
             ("F10", 1.0),
             ("F11", 1.0),
             ("F12", 1.0),
+            ("Prt", 1.0),
+            ("Ins", 1.0),
             ("Del", 1.0),
-            ("Num", 1.0),
-            ("/", 1.0),
-            ("*", 1.0),
-            ("-", 1.0),
         ],
+        // Number row, the top of the navigation cluster, then the keypad top.
         &[
             ("~", 1.0),
             ("1", 1.0),
@@ -186,11 +192,14 @@ pub fn keyboard_rows() -> &'static [&'static [(&'static str, f64)]] {
             ("-", 1.0),
             ("=", 1.0),
             ("Back", 2.0),
-            ("7", 1.0),
-            ("8", 1.0),
-            ("9", 1.0),
-            ("+", 1.0),
+            ("Home", 1.0),
+            ("PgUp", 1.0),
+            ("Num", 1.0),
+            ("/", 1.0),
+            ("*", 1.0),
+            ("-", 1.0),
         ],
+        // Tab row, the bottom of the navigation cluster, then keypad 7/8/9.
         &[
             ("Tab", 1.5),
             ("Q", 1.0),
@@ -206,9 +215,11 @@ pub fn keyboard_rows() -> &'static [&'static [(&'static str, f64)]] {
             ("[", 1.0),
             ("]", 1.0),
             ("\\", 1.5),
-            ("4", 1.0),
-            ("5", 1.0),
-            ("6", 1.0),
+            ("End", 1.0),
+            ("PgDn", 1.0),
+            ("7", 1.0),
+            ("8", 1.0),
+            ("9", 1.0),
             ("+", 1.0),
         ],
         &[
@@ -225,10 +236,10 @@ pub fn keyboard_rows() -> &'static [&'static [(&'static str, f64)]] {
             (";", 1.0),
             ("'", 1.0),
             ("Enter", 2.25),
-            ("1", 1.0),
-            ("2", 1.0),
-            ("3", 1.0),
-            ("Ent", 1.0),
+            ("4", 1.0),
+            ("5", 1.0),
+            ("6", 1.0),
+            ("+", 1.0),
         ],
         &[
             ("Shift", 2.25),
@@ -243,20 +254,28 @@ pub fn keyboard_rows() -> &'static [&'static [(&'static str, f64)]] {
             (".", 1.0),
             ("/", 1.0),
             ("Shift", 2.75),
-            ("0", 2.0),
-            (".", 1.0),
+            ("1", 1.0),
+            ("2", 1.0),
+            ("3", 1.0),
             ("Ent", 1.0),
         ],
+        // Bottom row, the up arrow, then the keypad's zero.
         &[
             ("Ctrl", 1.25),
             ("Fn", 1.25),
             ("Win", 1.25),
             ("Alt", 1.25),
-            ("", 6.25),
+            ("Space", 6.25),
             ("Alt", 1.25),
             ("Fn", 1.25),
             ("Ctrl", 1.25),
+            ("↑", 1.0),
+            ("0", 1.0),
+            (".", 1.0),
         ],
+        // The arrow cluster's lower row, pushed right so ↓ sits under ↑. The
+        // leading spacer spans the keys that end above it in the row above.
+        &[("", 14.0), ("←", 1.0), ("↓", 1.0), ("→", 1.0)],
     ]
 }
 

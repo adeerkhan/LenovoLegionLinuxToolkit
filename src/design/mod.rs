@@ -234,6 +234,15 @@ pub fn init() {
             &provider,
             gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
+
+        // Icons this project ships that Adwaita does not: the GitHub mark on the
+        // About page. Installed under `hicolor`, and added here from the source
+        // tree so `--shot` and a run-from-source build find it too. The path is
+        // baked at build time; on an installed system the hicolor copy is what
+        // is found and this search path simply points at a directory that is not
+        // there, which is harmless.
+        gtk4::IconTheme::for_display(&display)
+            .add_search_path(concat!(env!("CARGO_MANIFEST_DIR"), "/packaging/icons"));
     }
 
     apply_color_scheme(legiontoolkit::settings::current().color_scheme);

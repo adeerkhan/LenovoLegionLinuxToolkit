@@ -7,26 +7,37 @@ keyboard, and presets.
 Written in Rust on GTK 4 and libadwaita, so it reads as a first-class citizen of
 the GNOME desktop rather than a port of a Windows application.
 
+*Not officially affiliated with, endorsed by, or sponsored by Lenovo.*
+
 **[Project plan](docs/PLAN.md)** · **[Architecture](docs/architecture.md)** · **[Data sources](docs/data-sources.md)** · **[Hardware compatibility](docs/hardware-compatibility.md)** · **[Hardware validation](docs/hardware-validation.md)**
 
 ---
 
 ## Screenshots
 
-| Home (light) | Home (dark) |
-|---|---|
-| ![Home, light](assets/home.png) | ![Home, dark](assets/dark-home.png) |
+**Home — light**
 
-| Battery | Lighting — 24-zone RGB editor |
-|---|---|
-| ![Battery](assets/battery.png) | ![Lighting](assets/lighting.png) |
+![Home, light](assets/home.png)
 
-| Processors & GPU | Settings |
-|---|---|
-| ![Processors](assets/processors.png) | ![Settings](assets/settings.png) |
+**Home — dark**
 
-> Screenshots are produced by this project itself — `--shot` renders any page to
-> a PNG with no display, so the pictures above are the application, not mock-ups.
+![Home, dark](assets/dark-home.png)
+
+**Lighting — the 24-zone RGB editor**
+
+![Lighting](assets/lighting.png)
+
+**Processors & GPU**
+
+![Processors](assets/processors.png)
+
+**Settings**
+
+![Settings](assets/settings.png)
+
+**About**
+
+![About](assets/about.png)
 
 ## Table of contents
 
@@ -156,6 +167,10 @@ polkit policy, desktop entry, icons and a udev rule, and places the helper
 exactly where the policy names it. The Makefile owns every destination, so it is
 reversible with `make uninstall` and relocatable with a different `PREFIX`.
 
+This is a source install. The RPM, DEB and AUR packages build from these same
+sources (see [Packages](#packages)), but none is published to a repository yet,
+so your package manager cannot install it for you yet.
+
 ### 1. Prerequisites
 
 GTK 4.22 / libadwaita 1.9 and a Rust toolchain (1.85 or newer):
@@ -234,23 +249,22 @@ sudo make reloadmodule
 sudo make uninstall        # binaries, policy, desktop entry, icons and rules
 ```
 
-### Packages and Flatpak
+### Packages
 
-Not yet in any distribution's repository. `packaging/` holds an RPM spec (build
-with `make rpm`; verified end-to-end on Fedora 44), a Debian `debian/` directory
-for `dpkg-buildpackage`, and an AUR `PKGBUILD`. Flatpak is deliberately not used:
-it cannot write to `/sys`, and this privilege model needs a root helper outside
-the sandbox.
+Not yet in a distribution repository, but the packaging sources are here, built
+on the same `Makefile` and `install.sh` a local install uses:
 
----
+- **Fedora / RHEL** — `make rpm` builds `packaging/rpm/legiontoolkit.spec`
+  (verified end-to-end on Fedora 44). For a repository, point a
+  [COPR](https://copr.fedorainfracloud.org/) project at that spec; it builds from
+  the git source as an ordinary SCM package.
+- **Debian / Ubuntu** — `packaging/debian/` builds with `dpkg-buildpackage`.
+- **Arch** — `packaging/aur/PKGBUILD` builds with `makepkg -si`.
 
-### Not packaged yet
-
-No distribution repository carries it yet. `packaging/` holds a **RPM spec**
-(build with `make rpm`; verified end-to-end on Fedora 44), a **Debian**
-`debian/` directory for `dpkg-buildpackage`, and an **AUR `PKGBUILD`**. Flatpak
-is deliberately not used: it cannot write to `/sys`, and the privilege model
-here needs a root helper outside the sandbox.
+Flatpak is deliberately not used. Its sandbox cannot write to `/sys`, and this
+project's privilege model needs a root helper outside the sandbox; a native
+package installs the helper, its polkit action and the udev rule together, which
+is exactly what the application needs.
 
 ## Updating
 
@@ -369,9 +383,6 @@ This project stands on a lot of other people's reverse engineering.
 - **Vitals** (by corecoding / tjormola) — the GNOME Shell extension whose global
   `hwmon` sweep taught this project to find fan RPM where a driver-specific
   lookup found none.
-- **legendk95 on Discord**, for the first reverse engineering of how to talk to a
-  Legion keyboard at all, and the users who report hardware on models this
-  project's author cannot test.
 
 No code is copied from any of them. This project reimplements interfaces and
 behaviour, and communicates across documented boundaries.
@@ -380,5 +391,4 @@ behaviour, and communicates across documented boundaries.
 
 GPL-3.0-or-later — see [LICENSE](LICENSE).
 
-The projects above are licensed GPL-2.0 (LenovoLegionLinux), GPL-2.0 (Vitals),
-GPL-3.0 (Lenovo Legion Toolkit) and MIT (keyRGB) respectively.
+Not officially affiliated with Lenovo.

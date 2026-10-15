@@ -114,6 +114,11 @@ if [ "$mode" = install ]; then
                           "$ICONTHEMEDIR/${size}x${size}/apps/legiontoolkit.png"
     done
 
+    # The GitHub mark the About page draws. Adwaita has no GitHub icon, so the
+    # application carries its own, installed as a scalable action.
+    install -Dm644 "$here/packaging/icons/hicolor/scalable/actions/github-symbolic.svg" \
+                      "$ICONTHEMEDIR/scalable/actions/github-symbolic.svg"
+
     # Rendered last: the action id and the helper path must agree with wherever
     # the helper just landed.
     tmp_policy="$(mktemp)"
@@ -179,5 +184,6 @@ else
         udevadm control --reload-rules 2>/dev/null || true
     fi
     rm -f "$ICONTHEMEDIR"/*/apps/legiontoolkit.png
+    rm -f "$ICONTHEMEDIR/scalable/actions/github-symbolic.svg"
     echo "removed from $PREFIX"
 fi

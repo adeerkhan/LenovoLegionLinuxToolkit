@@ -423,8 +423,8 @@ impl Pages {
                 Rc::clone(&caps),
             )
             .with_extra(|page, _caps| {
-                if let Some(card) = rgb_section() {
-                    page.append(card.widget());
+                if let Some(section) = rgb_section() {
+                    page.append(&section);
                 }
             }),
             system: CapabilityPage::new(
@@ -996,20 +996,35 @@ fn about_page_body(
         }
 
         // The project link, so anyone reading the About page can find the
-        // source and follow it.
-        let link = gtk4::LinkButton::with_label(
-            "https://github.com/adeerkhan/LenovoLegionLinuxToolkit",
-            "LenovoLegionLinuxToolkit on GitHub",
-        );
+        // source and follow it. The GitHub mark sits beside the URL; GTK draws
+        // it from the icon this project ships, which `design::init` puts on the
+        // icon theme's search path.
         let link_row = GtkBox::new(Orientation::Horizontal, 12);
         link_row.add_css_class("llt-card");
         link_row.set_margin_bottom(8);
-        let link_name = Label::new(Some("Project"));
+
+        let link_name = Label::new(Some("GitHub"));
         link_name.add_css_class("llt-card-title");
         link_name.set_halign(Align::Start);
         link_name.set_hexpand(true);
         link_row.append(&link_name);
-        link_row.append(&link);
+
+        let link_box = GtkBox::new(Orientation::Horizontal, 6);
+        link_box.set_valign(Align::Center);
+
+        let github = gtk4::Image::from_icon_name("github-symbolic");
+        github.set_pixel_size(20);
+        github.set_valign(Align::Center);
+        github.set_margin_end(4);
+        link_box.append(&github);
+
+        let link = gtk4::LinkButton::with_label(
+            "https://github.com/adeerkhan/LenovoLegionLinuxToolkit",
+            "https://github.com/adeerkhan/LenovoLegionLinuxToolkit",
+        );
+        link.set_valign(Align::Center);
+        link_box.append(&link);
+        link_row.append(&link_box);
         page.append(&link_row);
 
         // The full compatibility report sits behind a button, so About reads as
@@ -1074,6 +1089,15 @@ fn about_page_body(
         note.set_wrap(true);
         note.set_margin_top(16);
         page.append(&note);
+
+        // The disclaimer, on its own line so it is not read as part of the
+        // sentence above.
+        let affiliation = Label::new(Some("Not officially affiliated with Lenovo."));
+        affiliation.add_css_class("llt-card-note");
+        affiliation.set_halign(Align::Start);
+        affiliation.set_wrap(true);
+        affiliation.set_margin_top(4);
+        page.append(&affiliation);
     })
 }
 
@@ -1368,16 +1392,72 @@ fn settings_page(refresh_seconds: Rc<RefCell<u32>>) -> Page {
 }
 
 // ---------------------------------------------------------------------------
-// Keyboard RGB — delegated to keyRGB
+// Keyboard RGB — our own ITE 8258 driver
 // ---------------------------------------------------------------------------
 
-/// A card that controls the keyboard's RGB lighting directly.
+/// What a picked colour reaches.
+///
+/// The reference names this the *Target Zone*: one key, the row or column it
+/// sits in, or the whole keyboard.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ZoneScope {
+    Keyboard,
+    Row,
+    Column,
+    Zone,
+}
+
+/// The zones a colour reaches for a key at `row`, `col` under `scope`.
+fn scope_zones(scope: ZoneScope, row: usize, col: usize) -> Vec<usize> {
+    match scope {
+        ZoneScope::Keyboard => (0..legiontoolkit::rgb::NUM_ZONES).collect(),
+        ZoneScope::Row => legiontoolkit::rgb::zones_in_row(row),
+        ZoneScope::Column => legiontoolkit::rgb::zones_in_col(col),
+        ZoneScope::Zone => vec![legiontoolkit::rgb::zone_for_key(row, col)],
+    }
+}
+
+/// Open the colour chooser and hand the picked RGB to `on_chosen`.
+#[allow(deprecated)] // gtk4::ColorDialog is the colour picker; still the simplest fit.
+fn choose_colour(
+    initial: [u8; 3],
+    parent: Option<gtk4::Window>,
+    on_chosen: impl Fn([u8; 3]) + 'static,
+) {
+    let dialog = gtk4::ColorDialog::new();
+    let rgba = gtk4::gdk::RGBA::new(
+        initial[0] as f32 / 255.0,
+        initial[1] as f32 / 255.0,
+        initial[2] as f32 / 255.0,
+        1.0,
+    );
+    dialog.choose_rgba(
+        parent.as_ref(),
+        Some(&rgba),
+        None::<&gtk4::gio::Cancellable>,
+        move |result| {
+            let Ok(rgba) = result else {
+                return;
+            };
+            on_chosen([
+                (rgba.red() * 255.0).round() as u8,
+                (rgba.green() * 255.0).round() as u8,
+                (rgba.blue() * 255.0).round() as u8,
+            ]);
+        },
+    );
+}
+
+/// The keyboard's lighting controls, shaped like the reference's Keyboard
+/// Backlight page: a **Settings** card (brightness, speed), the keyboard with a
+/// **Target Zone** picker and a **Selection** pair beside it, and an **Effect**
+/// card below.
 ///
 /// `None` when this machine has no ITE RGB keyboard. The protocol is our own
-/// implementation of the controller (see [`legiontoolkit::rgb`]); this card is
-/// the UI over it.
-#[allow(deprecated)] // gtk4::ColorButton is the swatch widget; still the simplest fit.
-fn rgb_section() -> Option<LltCard> {
+/// implementation of the controller (see [`legiontoolkit::rgb`]); these cards
+/// are the UI over it.
+#[allow(deprecated)] // `style_context().add_provider` is how a single key is painted its zone's colour.
+fn rgb_section() -> Option<GtkBox> {
     use legiontoolkit::rgb::{Effect, Keyboard};
     use legiontoolkit::rgb_presets::RgbPresetStore;
 
@@ -1385,21 +1465,13 @@ fn rgb_section() -> Option<LltCard> {
         return None;
     }
 
-    /// The card's live selection.
-    /// Which zones a picked colour applies to.
-    #[derive(Debug, Clone, Copy, PartialEq)]
-    enum ZoneScope {
-        All,
-        Row,
-        /// The zones stacked below the one picked.
-        Column,
-        Zone,
-    }
-
+    /// The card set's live selection.
     struct Ui {
         off: bool,
         effect: Effect,
         zones: [[u8; 3]; legiontoolkit::rgb::NUM_ZONES],
+        /// The last colour picked, reused as the chooser's starting colour.
+        color: [u8; 3],
         brightness: u32,
         speed: u32,
         forward: bool,
@@ -1410,27 +1482,18 @@ fn rgb_section() -> Option<LltCard> {
         off: false,
         effect: Effect::Static,
         zones: [[255, 32, 32]; legiontoolkit::rgb::NUM_ZONES],
+        color: [255, 32, 32],
         brightness: 40,
         speed: 5,
         forward: true,
-        scope: ZoneScope::Zone,
+        scope: ZoneScope::Keyboard,
     }));
 
-    let card = LltCard::new();
-    card.set_header(
-        "keyboard-brightness-symbolic",
-        "Keyboard RGB",
-        Some("24-zone RGB. Set the colour and effect here."),
-        &[],
-    );
+    let container = GtkBox::new(Orientation::Vertical, 0);
 
-    // Presets sit at the top, as the reference lays them out. The buttons are
-    // built further down (they need the controls), but the row is placed here.
-    let preset_row = GtkBox::new(Orientation::Horizontal, 4);
-    preset_row.set_valign(Align::Center);
-    card.append(&preset_row);
-
-    // --- Effect ---------------------------------------------------------
+    // --- Effect dropdown ------------------------------------------------
+    // Built first: the Settings card's smooth-transition switch and the presets
+    // both write it.
     let effects = [
         ("Off", None),
         ("Static", Some(Effect::Static)),
@@ -1445,25 +1508,102 @@ fn rgb_section() -> Option<LltCard> {
     let effect_dd = gtk4::DropDown::from_strings(&names);
     effect_dd.set_selected(1);
     effect_dd.set_valign(Align::Center);
-    effect_dd.set_size_request(200, -1);
-    effect_dd.connect_selected_notify({
+    effect_dd.set_size_request(220, -1);
+
+    // --- Settings: brightness, speed, smooth transition -----------------
+    let settings = LltCard::new();
+    settings.set_header("preferences-system-symbolic", "Settings", None, &[]);
+
+    let brightness = gtk4::Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 5.0);
+    brightness.set_size_request(220, -1);
+    brightness.set_value(40.0);
+    brightness.set_valign(Align::Center);
+    brightness.set_hexpand(true);
+    let brightness_value = Label::new(Some("40%"));
+    brightness_value.add_css_class("llt-value");
+    brightness_value.set_width_chars(4);
+    brightness_value.set_xalign(1.0);
+    brightness.connect_value_changed({
         let state = Rc::clone(&state);
-        move |dropdown| {
-            let selected = effects
-                .get(dropdown.selected() as usize)
-                .and_then(|(_, effect)| *effect);
-            let mut state = state.borrow_mut();
-            match selected {
-                Some(effect) => {
-                    state.off = false;
-                    state.effect = effect;
-                }
-                None => state.off = true,
-            }
+        let value = brightness_value.clone();
+        move |scale| {
+            let level = scale.value() as u32;
+            state.borrow_mut().brightness = level;
+            value.set_label(&format!("{level}%"));
         }
     });
 
-    // --- Zones: the whole keyboard, each key lit by its zone ------------
+    let speed = gtk4::Scale::with_range(Orientation::Horizontal, 0.0, 10.0, 1.0);
+    speed.set_size_request(220, -1);
+    speed.set_value(5.0);
+    speed.set_valign(Align::Center);
+    speed.set_hexpand(true);
+    let speed_value = Label::new(Some("5"));
+    speed_value.add_css_class("llt-value");
+    speed_value.set_width_chars(4);
+    speed_value.set_xalign(1.0);
+    speed.connect_value_changed({
+        let state = Rc::clone(&state);
+        let value = speed_value.clone();
+        move |scale| {
+            let level = scale.value() as u32;
+            state.borrow_mut().speed = level;
+            value.set_label(&level.to_string());
+        }
+    });
+
+    // The firmware has no separate "smooth transition" flag; its Smooth effect
+    // is the same idea, so the switch selects that effect and the dropdown
+    // follows.
+    let smooth = gtk4::Switch::new();
+    smooth.set_valign(Align::Center);
+    smooth.connect_state_set({
+        let state = Rc::clone(&state);
+        let effect_dd = effect_dd.clone();
+        move |_, active| {
+            let effect = if active {
+                Effect::Smooth
+            } else {
+                Effect::Static
+            };
+            {
+                let mut state = state.borrow_mut();
+                if active {
+                    state.off = false;
+                }
+                state.effect = effect;
+            }
+            effect_dd.set_selected(effect_index(effect));
+            glib::Propagation::Proceed
+        }
+    });
+
+    let settings_grid = gtk4::Grid::new();
+    settings_grid.set_column_spacing(12);
+    settings_grid.set_row_spacing(8);
+    for (row, text) in ["Brightness", "Speed", "Smooth transition"]
+        .iter()
+        .enumerate()
+    {
+        let label = Label::new(Some(text));
+        label.add_css_class("llt-card-title");
+        label.set_halign(Align::Start);
+        settings_grid.attach(&label, 0, row as i32, 1, 1);
+    }
+    settings_grid.attach(&brightness, 1, 0, 1, 1);
+    settings_grid.attach(&brightness_value, 2, 0, 1, 1);
+    settings_grid.attach(&speed, 1, 1, 1, 1);
+    settings_grid.attach(&speed_value, 2, 1, 1, 1);
+    settings_grid.attach(&smooth, 2, 2, 1, 1);
+    settings.set_accessory(&settings_grid);
+    container.append(settings.widget());
+
+    // --- The keyboard, with Target Zone and Selection beside it ---------
+    let keyboard_card = GtkBox::new(Orientation::Vertical, 0);
+    keyboard_card.add_css_class("llt-card");
+
+    let layout = GtkBox::new(Orientation::Horizontal, 24);
+
     // The controller addresses 24 regions rather than keys, so every key takes
     // the colour of the region it lands in (see `rgb::zone_for_key`). Drawing a
     // real keyboard is what makes the zones legible: you can see which keys a
@@ -1473,14 +1613,21 @@ fn rgb_section() -> Option<LltCard> {
     keyboard.set_row_spacing(4);
     keyboard.set_column_spacing(4);
     keyboard.set_halign(Align::Start);
-    keyboard.set_margin_top(8);
-    keyboard.set_margin_bottom(8);
+    keyboard.set_valign(Align::Start);
 
     let mut zone_keys: Vec<ZoneKey> = Vec::new();
     for (row, keys) in legiontoolkit::rgb::keyboard_rows().iter().enumerate() {
         let line = GtkBox::new(Orientation::Horizontal, 2);
         line.set_halign(Align::Start);
         for (col, (label, width)) in keys.iter().enumerate() {
+            // An empty label is a spacer, not a key: the gap that lines the
+            // short arrow row up under the rest of the keyboard.
+            if label.is_empty() {
+                let gap = GtkBox::new(Orientation::Horizontal, 0);
+                gap.set_size_request((width * 26.0) as i32, 22);
+                line.append(&gap);
+                continue;
+            }
             let zone = legiontoolkit::rgb::zone_for_key(row, col);
             let button = gtk4::Button::with_label(label);
             button.set_size_request((width * 26.0) as i32, 22);
@@ -1501,119 +1648,140 @@ fn rgb_section() -> Option<LltCard> {
     }
     let zone_keys = Rc::new(zone_keys);
 
-    // Picking a colour on a key applies it to every zone in the current scope,
-    // and repaints the keys that those zones cover.
+    // Picking a colour on a key applies it to every zone the current Target
+    // Zone reaches, then repaints the keys those zones cover.
     for key in zone_keys.iter() {
         let (row, col) = (key.row, key.col);
-        let state = Rc::clone(&state);
-        let zone_keys = Rc::clone(&zone_keys);
-        key.button.connect_clicked(move |button| {
-            let dialog = gtk4::ColorDialog::new();
-            let parent = button.root().and_downcast::<gtk4::Window>();
+        key.button.connect_clicked({
             let state = Rc::clone(&state);
             let zone_keys = Rc::clone(&zone_keys);
-            dialog.choose_rgba(
-                parent.as_ref(),
-                None::<&gtk4::gdk::RGBA>,
-                None::<&gtk4::gio::Cancellable>,
-                move |result| {
-                    let Ok(rgba) = result else {
-                        return;
-                    };
-                    let rgb = [
-                        (rgba.red() * 255.0).round() as u8,
-                        (rgba.green() * 255.0).round() as u8,
-                        (rgba.blue() * 255.0).round() as u8,
-                    ];
-                    let scope = state.borrow().scope;
-                    let zones: Vec<usize> = match scope {
-                        ZoneScope::All => (0..legiontoolkit::rgb::NUM_ZONES).collect(),
-                        ZoneScope::Row => legiontoolkit::rgb::zones_in_row(row),
-                        ZoneScope::Column => legiontoolkit::rgb::zones_in_col(col),
-                        ZoneScope::Zone => vec![legiontoolkit::rgb::zone_for_key(row, col)],
-                    };
-                    for zone in zones {
-                        state.borrow_mut().zones[zone] = rgb;
+            move |button| {
+                let initial = state.borrow().color;
+                choose_colour(initial, button.root().and_downcast::<gtk4::Window>(), {
+                    let state = Rc::clone(&state);
+                    let zone_keys = Rc::clone(&zone_keys);
+                    move |rgb| {
+                        let scope = state.borrow().scope;
+                        for zone in scope_zones(scope, row, col) {
+                            state.borrow_mut().zones[zone] = rgb;
+                        }
+                        state.borrow_mut().color = rgb;
+                        let zones = state.borrow().zones;
+                        paint_zones(&zone_keys, &zones);
                     }
-                    let zones = state.borrow().zones;
-                    paint_zones(&zone_keys, &zones);
-                },
-            );
+                });
+            }
         });
     }
 
-    // --- Brightness and speed ------------------------------------------
-    // Sliders, not steppers: brightness is a percentage, speed a 0-10 scale.
-    let brightness = gtk4::Scale::with_range(Orientation::Horizontal, 0.0, 100.0, 5.0);
-    brightness.set_size_request(240, -1);
-    brightness.set_value(40.0);
-    brightness.set_valign(Align::Center);
-    brightness.set_draw_value(true);
-    brightness.connect_value_changed({
-        let state = Rc::clone(&state);
-        move |scale| state.borrow_mut().brightness = scale.value() as u32
-    });
+    // The column beside the keyboard: what a colour targets, and a fast
+    // select-all / clear.
+    let side = GtkBox::new(Orientation::Vertical, 6);
+    side.set_valign(Align::Start);
+    side.set_margin_top(4);
+    side.set_margin_start(12);
 
-    let speed = gtk4::Scale::with_range(Orientation::Horizontal, 0.0, 10.0, 1.0);
-    speed.set_size_request(240, -1);
-    speed.set_value(5.0);
-    speed.set_valign(Align::Center);
-    speed.set_draw_value(true);
-    speed.connect_value_changed({
-        let state = Rc::clone(&state);
-        move |scale| state.borrow_mut().speed = scale.value() as u32
-    });
+    let target_label = Label::new(Some("Target Zone"));
+    target_label.add_css_class("llt-card-title");
+    target_label.set_halign(Align::Start);
+    side.append(&target_label);
 
-    // --- What a colour applies to ---------------------------------------
     let scopes = [
-        ("All zones", ZoneScope::All),
+        ("Keyboard", ZoneScope::Keyboard),
         ("This row", ZoneScope::Row),
-        ("This column (4 zones)", ZoneScope::Column),
+        ("This column", ZoneScope::Column),
         ("This zone", ZoneScope::Zone),
     ];
     let scope_names: Vec<&str> = scopes.iter().map(|(label, _)| *label).collect();
     let scope_dd = gtk4::DropDown::from_strings(&scope_names);
-    scope_dd.set_selected(3);
+    scope_dd.set_selected(0);
     scope_dd.set_valign(Align::Center);
+    scope_dd.set_size_request(180, -1);
     scope_dd.connect_selected_notify({
         let state = Rc::clone(&state);
         move |dropdown| {
             let scope = scopes
                 .get(dropdown.selected() as usize)
                 .map(|(_, scope)| *scope)
-                .unwrap_or(ZoneScope::Zone);
+                .unwrap_or(ZoneScope::Keyboard);
             state.borrow_mut().scope = scope;
         }
     });
+    side.append(&scope_dd);
 
-    // --- Rows -----------------------------------------------------------
-    let grid = gtk4::Grid::new();
-    grid.set_column_spacing(12);
-    grid.set_row_spacing(8);
-    for (index, (label, widget)) in [
-        ("Effect", effect_dd.clone().upcast::<gtk4::Widget>()),
-        ("Apply colour to", scope_dd.clone().upcast::<gtk4::Widget>()),
-        ("Zones", keyboard.clone().upcast::<gtk4::Widget>()),
-        ("Brightness", brightness.clone().upcast::<gtk4::Widget>()),
-        ("Speed", speed.clone().upcast::<gtk4::Widget>()),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let name = Label::new(Some(label));
-        name.add_css_class("llt-card-title");
-        name.set_halign(Align::Start);
-        name.set_hexpand(true);
-        grid.attach(&name, 0, index as i32, 1, 1);
-        grid.attach(&widget, 1, index as i32, 1, 1);
-    }
-    card.append(&grid);
+    let selection_label = Label::new(Some("Selection"));
+    selection_label.add_css_class("llt-card-title");
+    selection_label.set_halign(Align::Start);
+    selection_label.set_margin_top(12);
+    side.append(&selection_label);
 
-    // --- Actions, presets ----------------------------------------------
+    let selection = GtkBox::new(Orientation::Horizontal, 8);
+    let all = gtk4::Button::with_label("All");
+    let none = gtk4::Button::with_label("None");
+    selection.append(&all);
+    selection.append(&none);
+    side.append(&selection);
+
+    // All fills the whole keyboard with one colour; None clears it.
+    all.connect_clicked({
+        let state = Rc::clone(&state);
+        let zone_keys = Rc::clone(&zone_keys);
+        move |button| {
+            let initial = state.borrow().color;
+            choose_colour(initial, button.root().and_downcast::<gtk4::Window>(), {
+                let state = Rc::clone(&state);
+                let zone_keys = Rc::clone(&zone_keys);
+                move |rgb| {
+                    {
+                        let mut state = state.borrow_mut();
+                        state.color = rgb;
+                        state.zones = [rgb; legiontoolkit::rgb::NUM_ZONES];
+                    }
+                    let zones = state.borrow().zones;
+                    paint_zones(&zone_keys, &zones);
+                }
+            });
+        }
+    });
+    none.connect_clicked({
+        let state = Rc::clone(&state);
+        let zone_keys = Rc::clone(&zone_keys);
+        move |_| {
+            state.borrow_mut().zones = [[0, 0, 0]; legiontoolkit::rgb::NUM_ZONES];
+            let zones = state.borrow().zones;
+            paint_zones(&zone_keys, &zones);
+        }
+    });
+
+    layout.append(&keyboard);
+    layout.append(&side);
+    keyboard_card.append(&layout);
+    container.append(&keyboard_card);
+
+    // --- Effect card ----------------------------------------------------
+    let effect_card = LltCard::new();
+    effect_card.set_header("applications-graphics-symbolic", "Effect", None, &[]);
+
     let status = Label::new(None);
     status.add_css_class("llt-card-note");
     status.set_halign(Align::Start);
     status.set_wrap(true);
+
+    let tail = GtkBox::new(Orientation::Vertical, 8);
+    tail.set_valign(Align::Center);
+
+    // The effect in force, named above the picker as the reference names it.
+    let current = Label::new(Some(Effect::Static.label()));
+    current.add_css_class("llt-card-title");
+    current.set_halign(Align::Start);
+    tail.append(&current);
+
+    let effect_row = GtkBox::new(Orientation::Horizontal, 8);
+    let effect_label = Label::new(Some("Effect"));
+    effect_label.add_css_class("llt-card-title");
+    effect_row.append(&effect_label);
+    effect_row.append(&effect_dd);
+    tail.append(&effect_row);
 
     // Push the current controls to the keyboard. Shared by Apply and by
     // selecting a preset.
@@ -1647,6 +1815,8 @@ fn rgb_section() -> Option<LltCard> {
     // Six numbered presets, as the reference lays them out. Selecting a slot
     // loads it into the controls and applies it; Save writes the current look
     // back into the selected slot.
+    let preset_row = GtkBox::new(Orientation::Horizontal, 4);
+    preset_row.set_valign(Align::Center);
     let store = Rc::new(RefCell::new(RgbPresetStore::load()));
     let mut group: Option<gtk4::ToggleButton> = None;
     for index in 0..store.borrow().presets.len() {
@@ -1662,6 +1832,8 @@ fn rgb_section() -> Option<LltCard> {
             let effect_dd = effect_dd.clone();
             let brightness = brightness.clone();
             let speed = speed.clone();
+            let smooth = smooth.clone();
+            let current = current.clone();
             let zone_keys = Rc::clone(&zone_keys);
             let apply_current = Rc::clone(&apply_current);
             move |button| {
@@ -1686,6 +1858,10 @@ fn rgb_section() -> Option<LltCard> {
                 effect_dd.set_selected(effect_index(effect));
                 brightness.set_value(preset.brightness as f64);
                 speed.set_value(preset.speed as f64);
+                if smooth.is_active() != (effect == Effect::Smooth) {
+                    smooth.set_active(effect == Effect::Smooth);
+                }
+                current.set_label(effect.label());
                 paint_zones(&zone_keys, &zones);
                 apply_current();
             }
@@ -1709,7 +1885,7 @@ fn rgb_section() -> Option<LltCard> {
         }
     });
     preset_row.append(&save);
-    card.append(&preset_row);
+    tail.append(&preset_row);
 
     let apply = gtk4::Button::with_label("Apply");
     apply.add_css_class("suggested-action");
@@ -1717,8 +1893,39 @@ fn rgb_section() -> Option<LltCard> {
     let actions = GtkBox::new(Orientation::Horizontal, 8);
     actions.append(&off);
     actions.append(&apply);
-    card.append(&actions);
-    card.append(&status);
+    tail.append(&actions);
+    tail.append(&status);
+
+    effect_card.set_accessory(&tail);
+    container.append(effect_card.widget());
+
+    // The dropdown drives the state and the heading; the switch follows, and
+    // only when it disagrees, so the two do not bounce off each other.
+    effect_dd.connect_selected_notify({
+        let state = Rc::clone(&state);
+        let smooth = smooth.clone();
+        let current = current.clone();
+        move |dropdown| {
+            let selected = effects
+                .get(dropdown.selected() as usize)
+                .and_then(|(_, effect)| *effect);
+            {
+                let mut state = state.borrow_mut();
+                match selected {
+                    Some(effect) => {
+                        state.off = false;
+                        state.effect = effect;
+                    }
+                    None => state.off = true,
+                }
+            }
+            current.set_label(selected.map_or("Off", Effect::label));
+            let want = selected == Some(Effect::Smooth);
+            if smooth.is_active() != want {
+                smooth.set_active(want);
+            }
+        }
+    });
 
     apply.connect_clicked({
         let apply_current = Rc::clone(&apply_current);
@@ -1734,7 +1941,7 @@ fn rgb_section() -> Option<LltCard> {
         }
     });
 
-    Some(card)
+    Some(container)
 }
 
 /// The effect dropdown index for an effect (`0` is Off).
