@@ -519,3 +519,4 @@ ability to depend on floating library versions.
 # not build.
 !src/bin/
 !src/bin/**
+.zcode
