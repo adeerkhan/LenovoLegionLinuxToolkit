@@ -714,7 +714,7 @@ pub struct BatteryPage {
     hero_percent: Label,
     hero_status: Label,
     hero_icon: gtk4::Image,
-    rows: Rc<RefCell<Vec<(Label, String)>>>,
+    rows: Rc<RefCell<Vec<(Label, Label, String)>>>,
     backend: Rc<RefCell<Vec<Arc<Capability>>>>,
     /// The charging control (the three-way Battery Mode, or the conservation
     /// fallback), drawn below the hero so it sits with the readings it changes.
@@ -814,9 +814,9 @@ impl BatteryPage {
             value.add_css_class("llt-value");
             value.set_halign(Align::End);
 
-            let card = stat_card(&cap.label, &value);
+            let (card, title) = stat_card(&cap.label, &value);
             self.page.append(&card);
-            self.rows.borrow_mut().push((value, key.to_string()));
+            self.rows.borrow_mut().push((title, value, key.to_string()));
         }
 
         self.refresh();
@@ -857,13 +857,31 @@ impl BatteryPage {
             self.hero_status.set_label(&state);
         }
 
-        for (label, key) in self.rows.borrow().iter() {
+        // Two titles change meaning with the direction of the current: while
+        // charging, the rate is flowing in and the time is to full. The
+        // capability's own label is static, so the page re-titles the row.
+        let charging = legiontoolkit::paths::battery_text("status") == "Charging";
+
+        for (title, label, key) in self.rows.borrow().iter() {
             let backend = self.backend.borrow();
             let unit = backend
                 .iter()
                 .find(|c| c.key == *key)
                 .and_then(|c| c.unit)
                 .unwrap_or("");
+            match key.as_str() {
+                "battery_time" => title.set_label(if charging {
+                    "Time to Full"
+                } else {
+                    "Time Remaining"
+                }),
+                "battery_power" => title.set_label(if charging {
+                    "Charge Rate"
+                } else {
+                    "Power Draw"
+                }),
+                _ => {}
+            }
             label.set_label(&match lookup(key) {
                 // Hours-and-minutes reads better than a decimal for a duration.
                 Some(Value::Float(hours)) if key == "battery_time" => {
@@ -890,7 +908,9 @@ impl BatteryPage {
 
 /// A one-line stat card, matching the reference's `CardControl` +
 /// `CardHeaderControl` plus a 14px value.
-fn stat_card(title: &str, value: &Label) -> GtkBox {
+/// Returns the card and its title label, so a page can retitle a row whose
+/// meaning depends on state (time remaining vs. time to full, say).
+fn stat_card(title: &str, value: &Label) -> (GtkBox, Label) {
     let card = GtkBox::new(Orientation::Horizontal, 12);
     card.add_css_class("llt-card");
     card.set_margin_bottom(8);
@@ -902,7 +922,7 @@ fn stat_card(title: &str, value: &Label) -> GtkBox {
     card.append(&label);
 
     card.append(value);
-    card
+    (card, label)
 }
 
 // ---------------------------------------------------------------------------
@@ -1028,8 +1048,42 @@ fn about_page_body(
         let toggle = gtk4::ToggleButton::with_label(&format!("Show all controls — {summary}"));
         toggle.add_css_class("flat");
         toggle.set_halign(Align::Start);
-        toggle.set_margin_top(16);
-        page.append(&toggle);
+
+        // The whole details page as text: this block is what a compatibility
+        // report is made of, so one button replaces forty per-row copies.
+        let report_text = format!(
+            "Legion Toolkit {}\nMachine: {}\nDriver: {}\nBackend: {}\n\nSupported ({}):\n{}\n\n\
+             Not available ({}):\n{}",
+            env!("CARGO_PKG_VERSION"),
+            machine,
+            driver,
+            backend_name,
+            working.len(),
+            working
+                .iter()
+                .map(|(label, key)| format!("  {label} ({key})"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            missing.len(),
+            missing
+                .iter()
+                .map(|(label, reason)| format!("  {label} — {reason}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let copy_report = gtk4::Button::with_label("Copy report");
+        copy_report.add_css_class("flat");
+        copy_report.set_tooltip_text(Some("Copy the whole compatibility report to the clipboard"));
+        copy_report.connect_clicked(move |button| {
+            button.clipboard().set_text(&report_text);
+        });
+
+        let actions = GtkBox::new(Orientation::Horizontal, 8);
+        actions.set_halign(Align::Start);
+        actions.set_margin_top(16);
+        actions.append(&toggle);
+        actions.append(&copy_report);
+        page.append(&actions);
 
         let report = GtkBox::new(Orientation::Vertical, 0);
         report.set_margin_top(8);

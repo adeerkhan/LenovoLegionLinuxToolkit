@@ -533,14 +533,21 @@ impl Backend for SysfsBackend {
             }
         }
 
-        // Fan curve: absent on this model, present in the matrix so the
+        // Fan curve: present in the matrix on every machine so the
         // suppression path is exercised on every load rather than only on
-        // machines that happen to have a curve.
+        // machines that happen to have a curve. The reason distinguishes the
+        // two cases a user can land in: the driver exposes this model's curve
+        // (an editor is the missing piece) or the machine has none at all.
+        let curve_reason = if crate::paths::fan_curve_supported(self.paths.hwmon.as_deref()) {
+            "The driver exposes this model's fan curve; an editor is coming in a future release"
+        } else {
+            "No fan-curve interface is exposed by the driver on this machine"
+        };
         caps.push(
             Builder::new("fancurve", Kind::Custom, Group::Thermal)
                 .label("Fan Curve")
                 .icon("weather-windy-symbolic")
-                .unavailable("Fan curves are not supported by this model's firmware")
+                .unavailable(curve_reason)
                 .info(
                     "A fan curve maps temperature to fan speed, so the fans track \
                      the workload instead of the firmware's fixed steps.",
@@ -574,6 +581,16 @@ impl Backend for SysfsBackend {
                     crate::services::privilege::request("kbd_backlight", level)?;
                     Ok(())
                 });
+            } else if self.module_loaded {
+                // The driver is loaded yet registered no kbd_backlight LED:
+                // per-key RGB keyboards (the ITE controller) are not driven
+                // through the leds class at all, and saying "install the
+                // driver" to someone who has it loaded sends them chasing the
+                // wrong fix.
+                b = b.unavailable(
+                    "The driver is loaded, but this keyboard registers no zone-backlight LED \
+                     (per-key RGB keyboards use a separate controller)",
+                );
             } else {
                 b = b.unavailable("Requires the legion_laptop driver");
             }
@@ -835,8 +852,9 @@ impl Backend for SysfsBackend {
                         .label("Battery Mode")
                         .icon("battery-symbolic")
                         .note(
-                            "Normal charges to full; Conservation holds around 60%; \
-                             Rapid charges fastest.",
+                            "Normal charges to full; Conservation holds the battery near \
+                             its storage threshold (around 60\u{2013}80% depending on model) to \
+                             spare it; Rapid charges fastest.",
                         )
                         .values(values)
                         .read(move || {
@@ -913,17 +931,27 @@ impl Backend for SysfsBackend {
         }
 
         // ---- System -------------------------------------------------------
-        for (key, label, icon) in [
-            ("fn_lock", "Fn Lock", "input-keyboard-symbolic"),
-            ("touchpad", "Touchpad", "input-touchpad-symbolic"),
-            ("camera_power", "Camera", "camera-photo-symbolic"),
+        for (key, label, icon, note) in [
+            ("fn_lock", "Fn Lock", "input-keyboard-symbolic", None),
+            ("touchpad", "Touchpad", "input-touchpad-symbolic", None),
+            (
+                "camera_power",
+                "Camera",
+                "camera-photo-symbolic",
+                // `camera_power` is the software power bit. The physical
+                // privacy switch, where the model has one, sits in front of it
+                // electrically and its state is not reported through sysfs —
+                // which is why a camera that is "on" here can still be dark.
+                Some("Software power for the camera. The physical privacy switch, if present, overrides this and is not reported by the driver."),
+            ),
             (
                 "usb_charging",
                 "Always-On USB Charging",
                 "drive-harddisk-usb-symbolic",
+                None,
             ),
         ] {
-            caps.push(self.toggle_cap(key, label, icon, Group::System, None));
+            caps.push(self.toggle_cap(key, label, icon, Group::System, note));
         }
 
         // ---- GPU working mode and hybrid/G-Sync ---------------------------
@@ -937,7 +965,12 @@ impl Backend for SysfsBackend {
             let mut b = Builder::new("igpumode", Kind::Enum, Group::Processors)
                 .label("GPU Working Mode")
                 .icon("video-display-symbolic")
-                .note("Takes effect after a reboot.")
+                .note(
+                    "Hybrid switches the discrete GPU on and off on demand; \
+                     Integrated Only powers it off entirely for battery life; \
+                     Hybrid Auto lets the firmware decide. Takes effect after a \
+                     reboot.",
+                )
                 .values(vec![
                     NamedValue {
                         value: "0".into(),
@@ -968,13 +1001,19 @@ impl Backend for SysfsBackend {
         }
 
         // `gsync` is the attribute LLL drives as "Hybrid Mode (sometimes also
-        // G-Sync)", so the label names both.
+        // G-Sync)", so the label names both. It presupposes Hybrid mode: with
+        // the GPU working mode set to Integrated Only there is no discrete GPU
+        // driving the panel to sync with, so the two controls read together.
         let mut gsync = self.toggle_cap(
             "gsync",
             "G-Sync / Hybrid Mode",
             "video-display-symbolic",
             Group::Processors,
-            Some("Takes effect after a reboot."),
+            Some(
+                "Synchronises the panel to the discrete GPU (G-Sync) instead of \
+                 the fixed refresh rate. Effective only in Hybrid GPU mode; \
+                 takes effect after a reboot.",
+            ),
         );
         if gsync.is_available() && !self.legion_supports("issupportgsync") {
             gsync.unavailable_reason = Some("Not supported by this model's firmware");

@@ -12,10 +12,18 @@ mod window;
 use tracing_subscriber::{fmt, EnvFilter};
 
 fn main() {
+    use std::io::IsTerminal;
+
+    // Logs go to stderr, which is where someone reading them expects them —
+    // and where `2>&1 | tee` in CONTRIBUTING points. Colour only when that
+    // stream is a terminal, so a teed log file is free of ANSI escapes;
+    // NO_COLOR is respected by the subscriber itself on top of this.
     fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
+        .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
         .init();
 
     tracing::info!(

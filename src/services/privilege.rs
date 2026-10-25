@@ -109,10 +109,16 @@ pub fn request(key: &str, value: &str) -> anyhow::Result<()> {
     };
 
     if output.status.success() {
+        tracing::debug!(key, value, "helper write succeeded");
         return Ok(());
     }
 
-    Err(anyhow::anyhow!("{}", explain(key, &output)))
+    let explanation = explain(key, &output);
+    // The failure is shown in red under the control and nowhere else, so a
+    // debug log without this line cannot explain a report like "the toggle
+    // snaps back" — the refusal never reached the log.
+    tracing::warn!(key, value, "helper write failed: {explanation}");
+    Err(anyhow::anyhow!("{explanation}"))
 }
 
 /// Turn a failed `pkexec` run into something a user can act on.
@@ -144,7 +150,10 @@ fn explain(key: &str, output: &std::process::Output) -> String {
         Some(68) => format!("this machine has no backing file for {key:?}"),
         Some(69) => "the backing file disappeared before it could be written".to_string(),
         Some(74) => format!("the file exists but could not be written for {key:?}"),
-        Some(77) => format!("the helper refused {key:?} — not an allowed capability").to_string(),
+        // The helper distinguishes "not an allowed capability" from "outside
+        // the writable roots"; its stderr — appended below — says which. Do
+        // not paraphrase it here, or the lead contradicts the detail.
+        Some(77) => format!("the helper refused to write {key:?}").to_string(),
         Some(other) => format!("pkexec exited {other}"),
         None => "pkexec was killed by a signal".to_string(),
     };

@@ -54,7 +54,7 @@ fn run() -> Result<(), ExitCode> {
         // authorised the helper, the helper reached the file, and root can
         // write it. Everything short of that is guesswork.
         Some("--check") => {
-            match legiontoolkit::policy::resolve_target("powermode") {
+            match legiontoolkit::policy::resolve_target("powermode", None) {
                 Some(path) => {
                     println!(
                         "helper      {}",
@@ -112,8 +112,10 @@ fn write_capability(key: &str, value: &str) -> Result<(), ExitCode> {
     }
 
     // 2. Resolve through the same logic the GUI uses, so the two cannot
-    //    disagree about which file a key means.
-    let path = legiontoolkit::policy::resolve_target(key)
+    //    disagree about which file a key means. The value is part of the
+    //    resolution: since kernel 6.14 the legacy platform-profile file
+    //    rejects `custom`, which must go to a handler's class device.
+    let path = legiontoolkit::policy::resolve_target(key, Some(value))
         .ok_or_else(|| fail(68, &format!("no backing file for {key:?} on this machine")))?;
 
     // 3. The destination check. This is the boundary that matters, and it is a

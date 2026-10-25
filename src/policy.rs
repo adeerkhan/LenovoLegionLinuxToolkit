@@ -56,7 +56,16 @@ pub const WRITABLE_ROOTS: &[&str] = &[
     // in the power_supply class, not under any Lenovo-specific tree.
     "/sys/class/power_supply/",
     "/sys/module/legion_laptop/",
-    "/sys/bus/platform/drivers/ideapad",
+    // The ideapad attributes (fn_lock, camera_power, usb_charging, …) live
+    // under the bound driver's name, which is `ideapad_acpi` on current
+    // kernels and `ideapad_laptop` on older ones. `Path::starts_with` compares
+    // whole components, so a root spelled `/sys/bus/platform/drivers/ideapad`
+    // matches neither — it is not a string prefix.
+    "/sys/bus/platform/drivers/ideapad_acpi/",
+    "/sys/bus/platform/drivers/ideapad_laptop/",
+    // Since kernel 6.14 the legacy `/sys/firmware/acpi/platform_profile`
+    // rejects `custom`; that value must go to a handler's class device here.
+    "/sys/class/platform-profile/",
 ];
 
 /// True when `path` lies inside one of [`WRITABLE_ROOTS`].
@@ -102,9 +111,21 @@ pub const FIRMWARE_PREFIX: &str = "firmware:";
 ///
 /// Returns `None` for an unknown key, or for a firmware attribute that does not
 /// exist on this machine.
-pub fn resolve_target(key: &str) -> Option<std::path::PathBuf> {
+///
+/// `value` is the string about to be written, and one key's destination depends
+/// on it: since kernel 6.14 the legacy `/sys/firmware/acpi/platform_profile`
+/// rejects `custom` (`platform_profile_store` in `drivers/acpi/platform_profile.c`),
+/// so that value must go to the class device of a handler that offers it. The
+/// GUI's side of the contract never resolves paths itself — the helper does,
+/// with the value in hand — so this is the single place the rule lives.
+pub fn resolve_target(key: &str, value: Option<&str>) -> Option<std::path::PathBuf> {
     if let Some(name) = key.strip_prefix(FIRMWARE_PREFIX) {
         return crate::system::firmware_attribute_path(name);
+    }
+    if value == Some("custom") && matches!(key, "powermode" | "platform_profile") {
+        if let Some(p) = crate::paths::platform_profile_class_profile("custom") {
+            return Some(p);
+        }
     }
     crate::paths::discover().file(key)
 }
@@ -121,6 +142,15 @@ mod tests {
     /// sysfs backend installs only for paths that exist. So this checks the
     /// installed closures: the `write` field is `Some` exactly when the GUI
     /// believes it can write the key.
+    ///
+    /// Being on the name allowlist is the rule for known keys, but discovered
+    /// firmware attributes (`firmware:*`) cannot be on any fixed list — for
+    /// them the destination check is the whole authority. Both routes must
+    /// still land inside a writable root whenever the backing file exists;
+    /// the two checks drifted apart once — every ideapad key was named, yet
+    /// none of them resolved inside a writable root, so the helper refused
+    /// them all with "outside the writable roots" — and this test let it
+    /// through because `named` short-circuited the assertion.
     #[test]
     fn every_writable_capability_is_allowed() {
         let backend = SysfsBackend::new();
@@ -128,19 +158,31 @@ mod tests {
             if !cap.can_write() {
                 continue;
             }
-            // A capability is permitted if its key is on the name allowlist, or
-            // if it resolves to a path inside an allowed root. Discovered
-            // firmware attributes take the second route, which is why the
-            // destination check exists at all.
-            let named = is_writable(&cap.key);
-            let resolved_ok = resolve_target(&cap.key)
-                .map(|path| is_allowed_path(&path))
-                .unwrap_or(false);
+            if cap.key.starts_with(FIRMWARE_PREFIX) {
+                // The destination check is the only route for these.
+                if let Some(path) = resolve_target(&cap.key, None) {
+                    assert!(
+                        is_allowed_path(&path),
+                        "firmware attribute {:?} resolves to {} which the helper would refuse",
+                        cap.key,
+                        path.display()
+                    );
+                }
+                continue;
+            }
             assert!(
-                named || resolved_ok,
-                "capability {:?} is writable but neither named nor inside an allowed root",
+                is_writable(&cap.key),
+                "capability {:?} is writable but not on the helper's name allowlist",
                 cap.key
             );
+            if let Some(path) = resolve_target(&cap.key, None).filter(|p| p.exists()) {
+                assert!(
+                    is_allowed_path(&path),
+                    "capability {:?} resolves to {} which the helper would refuse",
+                    cap.key,
+                    path.display()
+                );
+            }
         }
     }
 
@@ -151,7 +193,39 @@ mod tests {
         assert!(!is_allowed_path(std::path::Path::new("/tmp/anything")));
         // A traversal component is refused even when it starts out inside a root.
         assert!(!is_allowed_path(std::path::Path::new(
-            "/sys/class/leds/../../../etc/passwd"
+            "/sys/bus/platform/drivers/../../../etc/passwd"
+        )));
+    }
+
+    /// The ideapad attributes live under the *bound driver's* directory name,
+    /// `ideapad_acpi` or `ideapad_laptop` — never a directory literally called
+    /// `ideapad`. A root once spelled that way matched nothing, because
+    /// `Path::starts_with` compares whole components, and the helper refused
+    /// every ideapad write with "outside the writable roots".
+    #[test]
+    fn ideapad_attribute_paths_are_allowed() {
+        for driver in ["ideapad_acpi", "ideapad_laptop"] {
+            let path = std::path::PathBuf::from(format!(
+                "/sys/bus/platform/drivers/{driver}/VPC2004:00/fn_lock"
+            ));
+            assert!(
+                is_allowed_path(&path),
+                "{} must be inside the writable roots",
+                path.display()
+            );
+        }
+        // The misspelling must not slip through as a string prefix.
+        assert!(!is_allowed_path(std::path::Path::new(
+            "/sys/bus/platform/drivers/ideapad/VPC2004:00/fn_lock"
+        )));
+    }
+
+    /// `custom` power mode is written to a handler's class device, so those
+    /// must be inside the roots too.
+    #[test]
+    fn platform_profile_class_devices_are_allowed() {
+        assert!(is_allowed_path(std::path::Path::new(
+            "/sys/class/platform-profile/platform-profile-0/profile"
         )));
     }
 

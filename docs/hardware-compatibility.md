@@ -300,7 +300,78 @@ From LLL's own docs (these are not our bugs, but users will report them as ours)
 - `wmi_fancurve_speed_only = true` means WMI3 fan tables transmit speed only;
   temperatures, fan-2 speed and acceleration/decelation read back as 0.
 - Enabling battery conservation silently clears rapid charge, and vice versa —
-  the two controls must be mutually exclusive in the UI.
+   the two controls must be mutually exclusive in the UI.
+
+## Reported machine: Legion 7 16IAX7 (82TD, BIOS K1CN48WW) — 2026-10-25
+
+A compatibility report against toolkit `0.1.0` (built from `74ef4913`), Fedora 44,
+kernel 7.2.11, KDE Plasma 6.8, NVIDIA 615 open, BIOS GPU mode Hybrid, Secure Boot
+on. Driver: LLL main plus the pending K1CN PR (stock main reads 0 RPM / 0 °C on
+this BIOS — the PR adds/fixes the sensor readouts). Every item below was
+cross-checked against the driver source before it was acted on.
+
+The DMI entry (`kernel_module/legion-laptop.c`, `.ident = "K1CN"`) maps to:
+
+```c
+static const struct model_config model_k1cn = {
+    .embedded_controller_id     = 0x5263,
+    .has_minifancurve           = false,
+    .has_custom_powermode       = true,     /* custom platform profile exists */
+    .access_method_powermode    = ACCESS_METHOD_WMI,
+    .access_method_keyboard     = ACCESS_METHOD_WMI,
+    .access_method_fanspeed     = ACCESS_METHOD_WMI3,
+    .access_method_temperature  = ACCESS_METHOD_WMI3,
+    .access_method_fancurve     = ACCESS_METHOD_WMI3,  /* <-- a curve exists */
+    .access_method_fanfullspeed = ACCESS_METHOD_WMI,
+    .acpi_check_dev             = true,
+};
+```
+
+**Decisive differences from the QNCN reference machine:** the fan curve *is*
+exposed (`ACCESS_METHOD_WMI3`, the hwmon `pwm*_auto_point*` family), and the
+keyboard is per-key RGB (ITE `048d:c978`) — the driver's
+`legion_kbd_bl_init()` aborts LED registration when the initial WMI brightness
+read fails, so no `platform::kbd_backlight` appears even with the module
+loaded. The About-page reasons for both cases were corrected accordingly
+(2026-10-25).
+
+**Reported working:** all sensor cards (values match `sensors`/`nvidia-smi`/
+`free`/`df`), power modes + Fn+Q sync, maximum fan speed, battery modes, the
+whole Battery page vs `upower`, IO-port light, touchpad, Windows key, display
+overdrive, Fn Lock *read*. **Correctly unavailable:** chipset temp, aux/4th fan,
+Y-logo light (RGB-controller-driven), Instant Boot, power-limit sliders, CPU
+package power, charge limit, zone RGB keyboard.
+
+**Reported broken, with the fixes shipped 2026-10-25:**
+
+1. *Fn Lock / Camera / Always-On USB writes refused* — the helper's writable
+   root was spelled `/sys/bus/platform/drivers/ideapad`, which matches neither
+   `ideapad_acpi` nor `ideapad_laptop` component-wise (`Path::starts_with`
+   compares whole components). Affects every machine, including the QNCN
+   reference. Roots corrected in `src/policy.rs`; the drift test now checks the
+   resolved path, not just the key name.
+2. *Custom power mode EINVAL* — kernel ≥ 6.14 rejects `custom` on the legacy
+   `/sys/firmware/acpi/platform_profile`; it must go to the class device
+   (`/sys/class/platform-profile/platform-profile-N/profile`) of a handler
+   whose `choices` include it (on this machine, lenovo-wmi-gamezone / the
+   legion module's own "lenovo-legion" handler). `resolve_target` is now
+   value-aware.
+3. *G-Sync toggle snapped back with no helper call* — a click landing inside
+   the 1-second refresh window was swallowed by the "updating" guard with no
+   write and no feedback. The guard now distinguishes programmatic echoes from
+   user gestures by value, failed writes revert the control immediately, and
+   every failed helper call is logged.
+4. *Misleading About reasons* — see the keyboard/fan-curve notes above.
+
+**Not yet validated on this machine** (retest checklist in the issue reply):
+Presets, Settings toggles, suspend/resume, Always-On USB while asleep, and the
+new `custom` write path (needs `cat /sys/class/platform-profile/platform-profile-*/choices`
+to confirm which handler offers `custom` on kernel 7.2).
+
+**Fan curve:** the driver exposes it, and writing works on this model, but the
+WMI readback returns an empty buffer — the planned editor must handle a missing
+readback (default-curve loader, write-first flow). Tracked in
+[docs/PLAN.md](PLAN.md) as its own milestone.
 
 
 ---

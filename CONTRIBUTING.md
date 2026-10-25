@@ -10,12 +10,16 @@ with:
 
 - what you did, what you expected, and what happened instead;
 - your **machine** and **driver** — the About page's *Machine*, *Driver* and
-  *Backend* rows each have a copy button, so paste them straight in;
+  *Backend* rows each have a copy button, so paste them straight in (or use the
+  page's *Copy report* button for the whole compatibility list);
 - a log:
 
   ```sh
-  RUST_LOG=debug legiontoolkit 2>&1 | tee legion-toolkit.log
+  NO_COLOR=1 RUST_LOG=debug legiontoolkit 2>&1 | tee legion-toolkit.log
   ```
+
+  `NO_COLOR=1` keeps ANSI escapes out of the file; failed privileged writes are
+  logged, so the log explains a control that "does nothing".
 
 ## Reporting your machine (compatibility)
 

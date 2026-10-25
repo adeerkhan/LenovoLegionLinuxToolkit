@@ -16,7 +16,7 @@
 //! comes back through a channel — otherwise the window freezes for the duration
 //! of the prompt, which looks exactly like a crash.
 
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -31,20 +31,28 @@ use legiontoolkit::capability::{Capability, Kind, Limits, Value};
 pub struct FeatureCard {
     card: LltCard,
     capability: Option<Arc<Capability>>,
-    /// True while `refresh` is writing values into the controls.
+    /// The last value `refresh` wrote into the control, so the control's own
+    /// `changed` signal can be told apart from a user gesture.
     ///
-    /// Setting a `SpinButton` or `DropDown` fires the same `changed` signal a
-    /// user interaction does, so without this every refresh looked like an edit.
-    /// The earlier guard compared the widget's value against the capability's
-    /// and skipped if equal — which is unreliable for floats: a spin button
-    /// rounding 55.0 to 54.999 read as a change and issued a write. The
-    /// reference guards the same way, with an `IsRefreshing` field.
-    updating: Rc<Cell<bool>>,
+    /// Setting a `Switch`/`DropDown`/`SpinButton` fires the same signal a user
+    /// interaction does. Two earlier designs got this wrong in opposite
+    /// directions: comparing the widget against the capability misfired for
+    /// floats (a spin button rounding 55.0 to 54.999 read as an edit and
+    /// issued a write), and a single "updating" flag held for the whole
+    /// refresh swallowed any click that landed inside the refresh window —
+    /// dropped with no write, no feedback, reported as the G-Sync toggle
+    /// "snapping back". Comparing against the value the last refresh actually
+    /// wrote suppresses the echo and leaves real gestures intact; the spin
+    /// comparison tolerates half a step for the rounding.
+    programmatic: Rc<RefCell<Option<Value>>>,
     value_label: Option<Label>,
     meter: Option<(ProgressBar, f64, f64)>,
     toggle: Option<Switch>,
     dropdown: Option<(DropDown, Vec<String>)>,
     spin: Option<SpinButton>,
+    /// The spin button's step, for the echo tolerance. Unused by the other
+    /// kinds, which compare exactly.
+    step: Rc<std::cell::Cell<f64>>,
 }
 
 impl FeatureCard {
@@ -91,12 +99,13 @@ impl FeatureCard {
 
         let mut this = Self {
             card,
-            updating: Rc::new(Cell::new(false)),
+            programmatic: Rc::new(RefCell::new(None)),
             value_label: None,
             meter: None,
             toggle: None,
             dropdown: None,
             spin: None,
+            step: Rc::new(std::cell::Cell::new(1.0)),
             capability: None,
         };
 
@@ -193,6 +202,8 @@ impl FeatureCard {
             step: 1.0,
         });
         let spin = SpinButton::with_range(limits.min, limits.max, limits.step);
+        // Remembered for the echo tolerance in `connect_controls`.
+        self.step.set(limits.step.max(f64::EPSILON));
         spin.set_halign(Align::End);
         spin.set_valign(Align::Center);
         // Fixed width: a value gaining a digit must not shift the card's layout.
@@ -230,21 +241,32 @@ impl FeatureCard {
             _ => return,
         };
 
+        // Every control kind gets the same two pieces: an echo test against
+        // [`Self::programmatic`], and a `revert` that puts the widget back to
+        // the last-read hardware value when a write fails — without it the
+        // control lies about the state until the next refresh tick.
         if let Some(sw) = &self.toggle {
             let cap = Arc::clone(&cap);
             let parent = parent.clone();
             let card = self.card.clone();
 
-            let updating = Rc::clone(&self.updating);
+            let programmatic = Rc::clone(&self.programmatic);
             sw.connect_state_set(move |sw, _| {
                 // A programmatic set fires this too; only a user gesture should
-                // reach the write path.
-                if updating.get() {
+                // reach the write path. The echo is the value the last refresh
+                // wrote into this switch.
+                let requested = sw.is_active();
+                if matches!(&*programmatic.borrow(), Some(Value::Bool(b)) if *b == requested) {
                     return glib::Propagation::Proceed;
                 }
-                let requested = sw.is_active();
 
-                confirm_and_write(&parent, &card, &cap, Value::Bool(requested));
+                confirm_and_write(
+                    &parent,
+                    &card,
+                    &cap,
+                    Value::Bool(requested),
+                    toggle_revert(sw, &programmatic),
+                );
                 glib::Propagation::Proceed
             });
         }
@@ -255,17 +277,28 @@ impl FeatureCard {
             let card = self.card.clone();
             let values = values.clone();
             let dd_weak = dd.clone();
+            let revert_values = values.clone();
 
-            let updating = Rc::clone(&self.updating);
-            dd.connect_selected_notify(move |dd| {
-                if updating.get() {
-                    return;
+            let programmatic = Rc::clone(&self.programmatic);
+            let revert_programmatic = Rc::clone(&self.programmatic);
+            let revert_dd = dd.clone();
+            let revert: Rc<dyn Fn()> = Rc::new(move || {
+                if let Some(Value::Text(s)) = revert_programmatic.borrow().as_ref() {
+                    if let Some(idx) = revert_values.iter().position(|v| v == s) {
+                        revert_dd.set_selected(idx as u32);
+                    }
                 }
+            });
+
+            dd.connect_selected_notify(move |dd| {
                 let idx = dd.selected() as usize;
                 let Some(value) = values.get(idx).cloned() else {
                     return;
                 };
-                confirm_and_write(&parent, &card, &cap, Value::Text(value));
+                if matches!(&*programmatic.borrow(), Some(Value::Text(last)) if *last == value) {
+                    return;
+                }
+                confirm_and_write(&parent, &card, &cap, Value::Text(value), Rc::clone(&revert));
                 let _ = dd_weak.clone();
             });
         }
@@ -275,12 +308,33 @@ impl FeatureCard {
             let parent = parent.clone();
             let card = self.card.clone();
 
-            let updating = Rc::clone(&self.updating);
+            let programmatic = Rc::clone(&self.programmatic);
+            let step = Rc::clone(&self.step);
+            let revert_programmatic = Rc::clone(&self.programmatic);
+            let revert_spin = spin.clone();
+            let revert: Rc<dyn Fn()> = Rc::new(move || {
+                let last = revert_programmatic.borrow().clone();
+                match last {
+                    Some(Value::Int(i)) => revert_spin.set_value(i as f64),
+                    Some(Value::Float(f)) => revert_spin.set_value(f),
+                    _ => {}
+                }
+            });
+
             spin.connect_value_changed(move |spin| {
-                if updating.get() {
+                let new = spin.value();
+                // Half a step of tolerance: a spin button may report 54.999
+                // for the 55.0 that was set into it, and that must not read
+                // as an edit.
+                let echo = match &*programmatic.borrow() {
+                    Some(Value::Float(f)) => (new - f).abs() < step.get() / 2.0,
+                    Some(Value::Int(i)) => (new - *i as f64).abs() < step.get() / 2.0,
+                    _ => false,
+                };
+                if echo {
                     return;
                 }
-                confirm_and_write(&parent, &card, &cap, Value::Float(spin.value()));
+                confirm_and_write(&parent, &card, &cap, Value::Float(new), Rc::clone(&revert));
             });
         }
     }
@@ -295,10 +349,6 @@ impl FeatureCard {
             Some(c) => c,
             None => return,
         };
-        self.updating.set(true);
-        // Cleared on every exit path, so a panic in a widget setter cannot leave
-        // the card permanently deaf to the user.
-        let _guard = UpdateGuard(&self.updating);
 
         let Ok(value) = cap.read() else {
             if let Some(label) = &self.value_label {
@@ -350,6 +400,28 @@ impl FeatureCard {
             meter.set_fraction(((n - min) / span).clamp(0.0, 1.0));
         }
 
+        // Store what the controls are about to show *before* touching them.
+        // The setters fire their `changed` signals synchronously, and an echo
+        // is recognised by equality with the stored value — so the store must
+        // happen first, or an echo for a value that changed since the last
+        // cycle (Fn+Q flipped the mode, say) would compare against the stale
+        // one and read as a user gesture. `None` — value not representable in
+        // this control — disables echo suppression for the cycle, so a real
+        // gesture is never mistaken for an echo.
+        let shown = if self.toggle.is_some() {
+            Some(value.clone())
+        } else if let Some((_, values)) = &self.dropdown {
+            match &value {
+                Value::Text(s) if values.contains(s) => Some(value.clone()),
+                _ => None,
+            }
+        } else if self.spin.is_some() {
+            matches!(&value, Value::Int(_) | Value::Float(_)).then(|| value.clone())
+        } else {
+            None
+        };
+        *self.programmatic.borrow_mut() = shown;
+
         if let Some(sw) = &self.toggle {
             sw.set_active(matches!(value, Value::Bool(true)));
         }
@@ -377,15 +449,28 @@ impl FeatureCard {
     }
 }
 
+/// A toggle's revert: put the switch back to the last value the hardware
+/// reported.
+fn toggle_revert(sw: &Switch, programmatic: &Rc<RefCell<Option<Value>>>) -> Rc<dyn Fn()> {
+    let sw = sw.clone();
+    let programmatic = Rc::clone(programmatic);
+    Rc::new(move || {
+        if let Some(Value::Bool(b)) = programmatic.borrow().as_ref() {
+            sw.set_active(*b);
+        }
+    })
+}
+
 /// Ask for confirmation when the write warrants it, then run it.
 fn confirm_and_write(
     parent: &impl gtk4::prelude::IsA<gtk4::Widget>,
     card: &LltCard,
     cap: &Arc<Capability>,
     value: Value,
+    revert: Rc<dyn Fn()>,
 ) {
     if !cap.dangerous {
-        submit_write(card, cap, value);
+        submit_write(card, cap, value, revert);
         return;
     }
 
@@ -394,7 +479,8 @@ fn confirm_and_write(
     let dialog = adw::AlertDialog::builder()
         .heading("Hold the fans at maximum?")
         .body(
-            "A write on the wrong path can leave the fans running at maximum              speed until the machine is rebooted. Recovering without a reboot \
+            "A write on the wrong path can leave the fans running at maximum \
+             speed until the machine is rebooted. Recovering without a reboot \
              means powering off manually.",
         )
         .build();
@@ -413,7 +499,7 @@ fn confirm_and_write(
         None::<&gtk4::gio::Cancellable>,
         move |response: glib::GString| {
             if response == "continue" {
-                submit_write(&card, &cap, value.clone());
+                submit_write(&card, &cap, value.clone(), Rc::clone(&revert));
             }
         },
     );
@@ -424,7 +510,11 @@ fn confirm_and_write(
 /// glib 0.22 dropped the channel API, and `MainContext::invoke` requires `Send`
 /// — which GTK widgets are not in gtk4 0.11. So the worker hands its result over
 /// a `std::sync::mpsc` channel and a short local timer drains it.
-fn submit_write(card: &LltCard, cap: &Arc<Capability>, value: Value) {
+///
+/// On failure `revert` puts the control back to the last-read hardware value
+/// immediately; waiting for the next refresh tick to do it reads as the toggle
+/// "snapping back" with no explanation.
+fn submit_write(card: &LltCard, cap: &Arc<Capability>, value: Value, revert: Rc<dyn Fn()>) {
     card.set_outcome(Severity::Info, "Applying…");
     card.set_sensitive(false);
 
@@ -451,20 +541,14 @@ fn submit_write(card: &LltCard, cap: &Arc<Capability>, value: Value) {
                     // A successful write clears the row rather than announcing
                     // itself: the control's new value is the confirmation.
                     Ok(()) => card.set_outcome(Severity::Success, ""),
-                    Err(message) => card.set_outcome(Severity::Error, &message),
+                    Err(message) => {
+                        card.set_outcome(Severity::Error, &message);
+                        revert();
+                    }
                 }
                 glib::ControlFlow::Break
             }
             None => glib::ControlFlow::Continue,
         }
     });
-}
-
-/// Clears an `updating` flag when dropped.
-struct UpdateGuard<'a>(&'a std::cell::Cell<bool>);
-
-impl Drop for UpdateGuard<'_> {
-    fn drop(&mut self) {
-        self.0.set(false);
-    }
 }

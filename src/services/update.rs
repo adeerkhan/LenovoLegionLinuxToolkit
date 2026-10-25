@@ -67,14 +67,23 @@ pub fn check_now() -> Option<Update> {
 }
 
 fn fetch_latest() -> Option<Update> {
-    let response = ureq::get(RELEASES_API)
+    let response = match ureq::get(RELEASES_API)
         .header("Accept", "application/vnd.github+json")
         .header(
             "User-Agent",
             concat!("legiontoolkit/", env!("CARGO_PKG_VERSION")),
         )
         .call()
-        .ok()?;
+    {
+        Ok(response) => response,
+        Err(error) => {
+            // 404 is the expected state until a first release is published;
+            // anything else is worth a debug line, since from the UI a failed
+            // check and "up to date" are indistinguishable.
+            tracing::debug!("update check could not reach {RELEASES_API}: {error}");
+            return None;
+        }
+    };
     let mut response = response;
     let body = response.body_mut().read_to_string().ok()?;
     let json: serde_json::Value = serde_json::from_str(&body).ok()?;

@@ -238,6 +238,40 @@ pub fn platform_profile_choices() -> Option<PathBuf> {
     sibling.exists().then_some(sibling)
 }
 
+/// Pick, from `(class-device dir, choices text)` pairs, the handler that
+/// accepts `value`, and return its `profile` file.
+///
+/// Pure over the pairs so the selection can be tested without a live `/sys`;
+/// [`platform_profile_class_profile`] is the thin wrapper that reads the real
+/// class directory.
+fn class_handler_profile(entries: &[(PathBuf, String)], value: &str) -> Option<PathBuf> {
+    entries
+        .iter()
+        .find(|(_, choices)| choices.split_whitespace().any(|token| token == value))
+        .map(|(dir, _)| dir.join("profile"))
+}
+
+/// The platform-profile class device that accepts `value`, if this kernel
+/// exposes one.
+///
+/// Since kernel 6.14 each handler registers a class device under
+/// `/sys/class/platform-profile/platform-profile-N/` with its own `profile`
+/// and `choices`, and the legacy `/sys/firmware/acpi/platform_profile`
+/// rejects `custom` outright — on a Legion that value belongs to the
+/// legion (or gamezone) handler alone, so it must be written there.
+pub fn platform_profile_class_profile(value: &str) -> Option<PathBuf> {
+    let entries: Vec<(PathBuf, String)> = std::fs::read_dir("/sys/class/platform-profile")
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let dir = entry.path();
+            let choices = std::fs::read_to_string(dir.join("choices")).ok()?;
+            Some((dir, choices))
+        })
+        .collect();
+    class_handler_profile(&entries, value)
+}
+
 /// The `leds` class renames the keyboard backlight to `kbd_backlight_1` when a
 /// name collision with another driver is detected, so it must be globbed.
 fn leds_path(function: &str) -> Option<PathBuf> {
@@ -450,6 +484,25 @@ pub fn hwmon_devices() -> Vec<(String, PathBuf)> {
         .collect()
 }
 
+/// True when the legion hwmon exposes the standard fan-curve auto-point
+/// interface (`pwm<N>_auto_point<M>_{pwm,temp,temp_hyst}`).
+///
+/// LenovoLegionLinux fills these from the model's EC or WMI fan table, so
+/// their presence is exactly the answer to "does this machine have a curve".
+pub fn fan_curve_supported(legion_hwmon: Option<&Path>) -> bool {
+    let Some(hwmon) = legion_hwmon else {
+        return false;
+    };
+    std::fs::read_dir(hwmon)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                name.starts_with("pwm") && name.contains("_auto_point") && name.ends_with("_pwm")
+            })
+        })
+        .unwrap_or(false)
+}
+
 /// The path for fan `index` (1-based), preferring the most specific source.
 ///
 /// Order matters: the legion module's own sensor is the most accurate where it
@@ -520,5 +573,38 @@ mod tests {
     fn an_empty_list_is_not_a_control() {
         assert!(parse_charge_types("").values.is_empty());
         assert!(parse_charge_types("   ").values.is_empty());
+    }
+
+    /// `custom` goes to the one handler that offers it, not the first.
+    #[test]
+    fn the_class_handler_offering_the_value_is_selected() {
+        let entries = vec![
+            (
+                PathBuf::from("/sys/class/platform-profile/platform-profile-0"),
+                "low-power balanced performance\n".to_string(),
+            ),
+            (
+                PathBuf::from("/sys/class/platform-profile/platform-profile-1"),
+                "low-power balanced performance custom\n".to_string(),
+            ),
+        ];
+        let picked = class_handler_profile(&entries, "custom").unwrap();
+        assert_eq!(
+            picked,
+            PathBuf::from("/sys/class/platform-profile/platform-profile-1/profile")
+        );
+    }
+
+    /// A value no handler offers resolves to nothing, and the caller keeps the
+    /// legacy file — which is where the standard modes still belong.
+    #[test]
+    fn a_value_no_handler_offers_is_not_redirected() {
+        let entries = vec![(
+            PathBuf::from("/sys/class/platform-profile/platform-profile-0"),
+            "low-power balanced performance\n".to_string(),
+        )];
+        assert!(class_handler_profile(&entries, "custom").is_none());
+        let standard = class_handler_profile(&entries, "balanced").unwrap();
+        assert!(standard.ends_with("profile"));
     }
 }

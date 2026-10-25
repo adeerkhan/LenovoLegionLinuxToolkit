@@ -88,7 +88,7 @@ impl MockBackend {
             Builder::new("fancurve", Kind::Custom, Group::Thermal)
                 .label("Fan Curve")
                 .icon("weather-windy-symbolic")
-                .unavailable("Fan curves are not supported by this model's firmware")
+                .unavailable("No fan-curve interface is exposed by the driver on this machine")
                 .info("A fan curve maps temperature to fan speed.")
                 .read(|| Ok(Value::Text("—".into())))
                 .build(),

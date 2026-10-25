@@ -556,6 +556,19 @@ reimplement the RPM↔PWM conversion in Rust or bridge to `legion_cli` via
 `LllCliBackend`. The `HardwareBackend` trait exists precisely so this decision
 can be made later without rewriting the UI.
 
+**Fan-curve editor — shape settled 2026-10-25, its own milestone.** The K1CN
+report (Legion 7 16IAX7) confirmed a machine in the tracker whose driver exposes
+the standard hwmon interface (`pwm{1,2}_auto_point{1..10}_{pwm,temp,temp_hyst}`,
+`access_method_fancurve = ACCESS_METHOD_WMI3`), with a quirk: the WMI readback
+returns an empty buffer even though writes work. The editor therefore reads and
+writes through the module-tree hwmon path (`/sys/module/legion_laptop/…/hwmon/`,
+already inside a writable root — no policy change needed), ships a default-curve
+loader for the empty-readback case, and treats write-then-verify as the flow
+rather than read-modify-write. The reference QNCN machine has no curve at all
+(`ACCESS_METHOD_NO_ACCESS`), so the editor is developed against the mock and
+validated by the K1CN reporter. Presence detection already exists:
+`paths::fan_curve_supported()` (drives the About-page reason since 2026-10-25).
+
 **Writes have not been tested on this machine.** The module is not loaded yet.
 Nothing in this plan has been validated against real EC writes — and EC writes
 are the part that can wedge fans at maximum speed until reboot, as documented for
